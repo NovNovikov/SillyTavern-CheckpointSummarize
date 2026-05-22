@@ -1,0 +1,98 @@
+#st_checkpoint_summarize_settings .stcs-section {
+  margin: 10px 0;
+}
+
+#st_checkpoint_summarize_settings .stcs-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+
+#st_checkpoint_summarize_settings h4 {
+  margin: 6px 0;
+}
+
+#st_checkpoint_summarize_settings .stcs-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#st_checkpoint_summarize_settings .stcs-no-brain-toggle {
+  margin: 0;
+  white-space: nowrap;
+}
+
+#stcs-memory-preview {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--SmartThemeBorderColor);
+  padding: 8px;
+  border-radius: 6px;
+}
+
+#stcs-draft-summary {
+  width: 100%;
+  resize: vertical;
+  min-height: 140px;
+}
+
+#st_checkpoint_summarize_settings .stcs-template-editor {
+  width: 100%;
+  resize: vertical;
+  min-height: 120px;
+}
+
+#stcs-locked-list .stcs-block {
+  border: 1px solid var(--SmartThemeBorderColor);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 8px 0;
+}
+
+#stcs-locked-list .stcs-preview {
+  white-space: pre-wrap;
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
+#stcs-locked-list .stcs-warn {
+  color: var(--warning);
+  margin-top: 6px;
+}
+
+#stcs-calc-result {
+  margin-top: 6px;
+  white-space: pre-wrap;
+}
+
+#st_checkpoint_summarize_settings .stcs-actions-row {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+#st_checkpoint_summarize_settings .stcs-actions-row .menu_button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  white-space: normal;
+  width: 80px;
+  min-height: 42px;
+  line-height: 1.1;
+  padding: 3px 6px;
+}
+
+#st_checkpoint_summarize_settings .stcs-injection-row > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#st_checkpoint_summarize_settings #stcs-injection-depth {
+  width: 88px;
+}

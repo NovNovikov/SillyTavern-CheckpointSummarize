@@ -771,11 +771,17 @@ function getCoverageGaps(chatLength) {
 }
 
 function getFirstGapInfo(chatLength) {
-  const gaps = getCoverageGaps(chatLength);
+  const total = Number(chatLength);
+  const gaps = getCoverageGaps(total);
   if (!gaps.length) return null;
   const first = gaps[0];
   const ranges = getSortedRangeCheckpoints();
-  const hasCoveredContentAfter = ranges.some((b) => Number(b.startIndex) > Number(first.end));
+  const hasCoveredContentAfter = ranges.some((b) => {
+    const start = Math.max(0, Number(b.startIndex));
+    const end = Math.min(total - 1, Number(b.endIndex));
+    if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) return false;
+    return start > Number(first.end);
+  });
   return { ...first, hasCoveredContentAfter };
 }
 

@@ -359,6 +359,41 @@ function setAutoModeRangeDebugInfo(text) {
   autoModeRangeDebugInfo = String(text ?? "").trim() || "n/a";
 }
 
+function traceAutoMode(point, extra = {}) {
+  try {
+    const state = getState();
+    const chat = getChatMessages();
+    const gaps = getCoverageGaps(chat.length);
+    const firstGap = gaps.length ? getFirstGapInfo(chat.length) : null;
+    const draftRange = getDraftRange(state.draft);
+    const ranges = getSortedRangeCheckpoints().map((block) => ({
+      id: block.id,
+      start: Number(block.startIndex),
+      end: Number(block.endIndex),
+      sourceTokens: Number(block.sourceTokenCount || 0),
+    }));
+
+    console.info(`[${MODULE_NAME} trace] ${point}`, {
+      chatLength: chat.length,
+      ranges,
+      gaps,
+      firstGap,
+      draftRange,
+      draftHasSummary: hasVisibleText(state.draft?.summary ?? ""),
+      targetRawBlockTokens: Number(state.settings?.targetRawBlockTokens || 0),
+      effectiveTargetRawBlockTokens: getEffectiveRawBlockTargetTokens(state),
+      autoModeEnabled: !!state.settings?.autoModeEnabled,
+      autoApproveEnabled: !!state.settings?.autoApproveEnabled,
+      noBrainModeEnabled: !!state.settings?.noBrainModeEnabled,
+      blocksRevision: getBlocksRevision(state),
+      autoModeRangeDebugInfo,
+      ...extra,
+    });
+  } catch (error) {
+    console.warn(`[${MODULE_NAME} trace] Failed at ${point}`, error);
+  }
+}
+
 function isRussianUiLanguage() {
   const htmlLang = String(document?.documentElement?.lang ?? "").toLowerCase();
   const i18nLang = String(globalThis?.i18next?.language ?? "").toLowerCase();
@@ -508,6 +543,7 @@ async function runAutoMode() {
   const state = getState();
   if (!state.enabled || !state.settings.autoModeEnabled) return;
   const autoDrainMode = !!state.settings.autoModeEnabled && !!state.settings.autoApproveEnabled;
+  traceAutoMode("run:start", { autoRunId, autoDrainMode });
 
   // Auto-heal empty/0-0 range before generation path (only when no draft text exists).
   if (!hasVisibleText(state.draft.summary ?? "")) {
@@ -591,8 +627,23 @@ async function runAutoMode() {
   const isMiddleGap = !!firstGap.hasCoveredContentAfter;
   const unsummarizedTokens = calculateMessageRangeTokens(startIndex, gapEnd);
   const targetTokens = getEffectiveRawBlockTargetTokens(state);
+  traceAutoMode("run:first-gap", {
+    autoRunId,
+    startIndex,
+    gapEnd,
+    isMiddleGap,
+    unsummarizedTokens,
+    targetTokens,
+  });
   if (!isMiddleGap && unsummarizedTokens < targetTokens) {
     setAutoModeRangeDebugInfo(`gap ${startIndex}-${gapEnd} below target (${unsummarizedTokens}<${targetTokens})`);
+    traceAutoMode("run:first-gap-below-target", {
+      autoRunId,
+      startIndex,
+      gapEnd,
+      unsummarizedTokens,
+      targetTokens,
+    });
     return;
   }
 
@@ -621,7 +672,24 @@ async function runAutoMode() {
       const loopIsMiddleGap = !!loopGap.hasCoveredContentAfter;
       const loopUnsummarizedTokens = calculateMessageRangeTokens(loopStartIndex, loopGapEnd);
       const loopTargetTokens = getEffectiveRawBlockTargetTokens(loopState);
+      traceAutoMode("run:loop-gap", {
+        autoRunId,
+        safetyCycles,
+        loopStartIndex,
+        loopGapEnd,
+        loopIsMiddleGap,
+        loopUnsummarizedTokens,
+        loopTargetTokens,
+      });
       if (!loopIsMiddleGap && loopUnsummarizedTokens < loopTargetTokens) {
+        traceAutoMode("run:loop-gap-below-target", {
+          autoRunId,
+          safetyCycles,
+          loopStartIndex,
+          loopGapEnd,
+          loopUnsummarizedTokens,
+          loopTargetTokens,
+        });
         break;
       }
       const loopAutoDrainMode = !!loopState.settings.autoModeEnabled && !!loopState.settings.autoApproveEnabled;
@@ -648,13 +716,39 @@ async function runAutoMode() {
         || isZeroZeroPlaceholder(rangeAfterSelect, loopStartIndex, loopGapEnd);
       if (selectedStillInvalid) {
         setAutoModeRangeDebugInfo(`gap ${loopStartIndex}-${loopGapEnd} | autoselect failed`);
+        traceAutoMode("run:selected-invalid", {
+          autoRunId,
+          safetyCycles,
+          loopStartIndex,
+          loopGapEnd,
+          rangeBeforeSelect,
+          rangeAfterSelect,
+          needAutoSelectBefore,
+        });
         break;
       }
+      traceAutoMode("run:before-generate", {
+        autoRunId,
+        safetyCycles,
+        loopStartIndex,
+        loopGapEnd,
+        rangeBeforeSelect,
+        rangeAfterSelect,
+        needAutoSelectBefore,
+        revisionBeforeGeneration,
+      });
       await generateDraftCheckpoint({ skipPostNoBrainMaintenance: true });
       if (!isCurrentAutoRun()) break;
 
       const nextState = getState();
       const revisionAfterGeneration = getBlocksRevision(nextState);
+      traceAutoMode("run:after-generate", {
+        autoRunId,
+        safetyCycles,
+        revisionBeforeGeneration,
+        revisionAfterGeneration,
+        draftHasSummary: hasVisibleText(nextState.draft?.summary ?? ""),
+      });
       if (revisionAfterGeneration !== revisionBeforeGeneration) {
         // Memory changed while generation was running (manual edits/toggles/deletes).
         // Drop stale draft and regenerate against fresh memory state.
@@ -667,7 +761,9 @@ async function runAutoMode() {
       }
 
       if (nextState.settings.autoApproveEnabled && hasVisibleText(nextState.draft.summary ?? "")) {
+        traceAutoMode("run:before-auto-lock", { autoRunId, safetyCycles });
         const lockOk = await lockDraftCheckpoint({ silent: true, forbidZeroZero: true });
+        traceAutoMode("run:after-auto-lock", { autoRunId, safetyCycles, lockOk });
         if (!lockOk) {
           const postLockState = getState();
           if (hasVisibleText(postLockState.draft.summary ?? "")) {
@@ -2063,6 +2159,15 @@ function autoSelectNextRange() {
   state.draft.previousSummariesTokenCount = previousSummariesTokenCount;
   state.draft.summary = "";
   state.draft.generatedAt = null;
+  traceAutoMode("autoselect:selected", {
+    firstGap,
+    selectedStart: startIndex,
+    selectedEnd: endIndex,
+    sourceTokenCount,
+    previousSummariesTokenCount,
+    availableContext,
+    rawBlockBudget,
+  });
   saveState();
   renderStatus();
 }
@@ -2083,6 +2188,12 @@ async function generateDraftCheckpoint(options = {}) {
     return;
   }
   const { start, end } = draftRange;
+  traceAutoMode("generate:start", {
+    options,
+    start,
+    end,
+    selectedTokens: calculateMessageRangeTokens(start, end),
+  });
   if (start === 0 && end === 0 && chat.length > 1) {
     state.draft.startIndex = null;
     state.draft.endIndex = null;
@@ -2257,6 +2368,13 @@ async function lockDraftCheckpoint(options = {}) {
     return false;
   }
 
+  traceAutoMode("lock:start", {
+    options,
+    start,
+    end,
+    selectedTokens: calculateMessageRangeTokens(start, end),
+  });
+
   const startMsg = chat[start];
   const endMsg = chat[end];
   const block = {
@@ -2288,6 +2406,12 @@ async function lockDraftCheckpoint(options = {}) {
   saveState();
   await flushMetadataNow();
   renderStatus();
+  traceAutoMode("lock:after-save", {
+    blockId: block.id,
+    start,
+    end,
+    sourceTokenCount: block.sourceTokenCount,
+  });
   toastr.success(`Checkpoint ${block.id} locked.`, MODULE_NAME);
   scheduleAutoModeRun();
   clearExtensionStatusError();
@@ -2359,8 +2483,11 @@ async function runNoBrainMaintenanceCycle(options = {}) {
   const state = getState();
   if (!state.settings.noBrainModeEnabled) return;
 
+  traceAutoMode("easy-maintenance:start", { options });
   await autofillCalculatorFromPromptItemization({ silent });
+  traceAutoMode("easy-maintenance:after-autofill", { options });
   applyCalculatedLimits({ silent });
+  traceAutoMode("easy-maintenance:after-apply-limits", { options });
   if (Number(state.settings.targetRawBlockTokens || 0) > NO_BRAIN_MAX_RAW_BLOCK_TOKENS) {
     applyTargetsFromRawBlock(NO_BRAIN_MAX_RAW_BLOCK_TOKENS);
     saveState();
@@ -2368,8 +2495,10 @@ async function runNoBrainMaintenanceCycle(options = {}) {
     if (!silent) {
       toastr.info(`Easy mode cap applied: raw block target limited to ${NO_BRAIN_MAX_RAW_BLOCK_TOKENS} tokens.`, MODULE_NAME);
     }
+    traceAutoMode("easy-maintenance:after-cap", { options });
   }
   autoSelectNextRange();
+  traceAutoMode("easy-maintenance:after-autoselect", { options });
 }
 
 function applyNoBrainUiLock() {
@@ -2733,8 +2862,17 @@ function deleteBlock(blockElement) {
   if (!confirmed) return;
 
   const state = getState();
+  const deletedBlock = state.blocks[idx];
   state.blocks.splice(idx, 1);
   bumpBlocksRevision(state);
+  traceAutoMode("delete:after-splice", {
+    blockId,
+    deletedRange: deletedBlock?.memoryOnly ? "memory-only" : {
+      start: Number(deletedBlock?.startIndex),
+      end: Number(deletedBlock?.endIndex),
+      sourceTokens: Number(deletedBlock?.sourceTokenCount || 0),
+    },
+  });
   saveState();
   renderStatus();
   scheduleAutoModeRun();

@@ -2825,14 +2825,7 @@ function updateDraftRangeFromInputs() {
 function renderStatus() {
   const state = getState();
   const tavernGenerating = isTavernGenerationActive();
-  // Self-heal only orphaned in-flight flags.
-  // Do not reset active runs that still own a non-zero runId.
-  if (
-    !tavernGenerating
-    && (autoModeInFlight || draftGenerationInFlight)
-    && activeAutoModeRunId === 0
-    && activeDraftGenerationRunId === 0
-  ) {
+  if (!tavernGenerating && (autoModeInFlight || draftGenerationInFlight)) {
     autoModeInFlight = false;
     draftGenerationInFlight = false;
     activeAutoModeRunId = 0;

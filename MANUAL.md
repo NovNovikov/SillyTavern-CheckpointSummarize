@@ -19,7 +19,7 @@ It stores chat history as locked checkpoint summaries:
 1. Enable `Enable extension`.
 2. Enable `Enable prompt injection`.
 3. Select a `Connection Profile` (preferably a non-reasoning profile for summary generation).
-4. Enable `One-click Auto mode`.
+4. Enable `Easy mode (recommended)`.
 5. Wait until first checkpoints appear in `Current Summary`.
 
 ## Modes
@@ -44,7 +44,7 @@ Behavior:
 2. If `Auto approve` is ON, draft is locked automatically.
 3. If `Auto approve` is OFF, draft stays for manual review.
 
-### One-click Auto mode
+### Easy mode
 Preset mode that prioritizes automation:
 - hides/locks part of manual controls;
 - keeps maintenance cycle active;
@@ -122,12 +122,12 @@ Usually means unsummarized tail is below target block size.
 Wait for more messages or lower `Target raw block tokens`.
 
 ### After deleting a checkpoint
-Its range becomes a gap and should be rebuilt by auto cycle (in auto/one-click modes).
+Its range becomes a gap and should be rebuilt by auto cycle (in auto/easy modes).
 
 ## Recommended Workflow for Long RP Chats
 1. Use a non-reasoning profile for summarization.
 2. Keep `Enable extension` and `Enable prompt injection` ON.
-3. Use `One-click Auto mode`.
+3. Use `Easy mode (recommended)`.
 4. Review `Current Summary` periodically.
 5. Edit only important checkpoints.
 6. Export checkpoints regularly as backups.

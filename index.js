@@ -2360,7 +2360,7 @@ async function runNoBrainMaintenanceCycle(options = {}) {
     saveState();
     renderStatus();
     if (!silent) {
-      toastr.info(`One-click Auto cap applied: raw block target limited to ${NO_BRAIN_MAX_RAW_BLOCK_TOKENS} tokens.`, MODULE_NAME);
+      toastr.info(`Easy mode cap applied: raw block target limited to ${NO_BRAIN_MAX_RAW_BLOCK_TOKENS} tokens.`, MODULE_NAME);
     }
   }
   autoSelectNextRange();
@@ -2938,7 +2938,7 @@ function renderStatus() {
 
   const primaryStatus = [
     `Enabled: ${state.enabled ? "yes" : "no"}`,
-    `One-click Auto: ${state.settings.noBrainModeEnabled ? "yes" : "no"}`,
+    `Easy mode: ${state.settings.noBrainModeEnabled ? "yes" : "no"}`,
     `Injection: ${state.injectionEnabled ? "yes" : "no"}`,
     `Auto mode enabled: ${autoModeEnabled ? "yes" : "no"}`,
     `Locked checkpoints: ${locked.length}`,
@@ -3085,12 +3085,12 @@ function bindUiEvents() {
 
     if (state.settings.noBrainModeEnabled) {
       void runNoBrainMaintenanceCycle({ silent: true });
-      toastr.success("One-click Auto mode enabled: preset applied and limits refreshed.", MODULE_NAME);
+      toastr.success("Easy mode enabled: preset applied and limits refreshed.", MODULE_NAME);
       if (state.settings.autoModeEnabled) {
         scheduleAutoModeRun();
       }
     } else {
-      toastr.info("One-click Auto mode disabled.", MODULE_NAME);
+      toastr.info("Easy mode disabled.", MODULE_NAME);
     }
   });
 

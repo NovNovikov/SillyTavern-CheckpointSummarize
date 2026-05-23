@@ -335,6 +335,7 @@ let autoModeRunSeq = 0;
 let activeAutoModeRunId = 0;
 let draftGenerationRunSeq = 0;
 let activeDraftGenerationRunId = 0;
+let draftTextareaWriteSeq = 0;
 let lastWorldInfoResolutionReason = "not attempted yet";
 let lastExtensionStatusError = "";
 let autoModeRangeDebugInfo = "n/a";
@@ -1091,13 +1092,23 @@ function hasVisibleText(value) {
   return visible.length > 0;
 }
 
-function forceSetDraftTextareaValue(value) {
+function forceSetDraftTextareaValue(value, expectedRange = null) {
   const text = String(value ?? "");
+  const writeSeq = ++draftTextareaWriteSeq;
+  const expectedStart = parseDraftIndex(expectedRange?.start);
+  const expectedEnd = parseDraftIndex(expectedRange?.end);
   const write = () => {
+    if (writeSeq !== draftTextareaWriteSeq) return;
+    const state = getState();
+    const currentRange = getDraftRange(state.draft);
+    const rangeMatches = expectedStart === null || expectedEnd === null
+      ? true
+      : !!currentRange && currentRange.start === expectedStart && currentRange.end === expectedEnd;
+    if (!rangeMatches || String(state.draft?.summary ?? "") !== text) return;
+
     const draftSummaryEl = document.getElementById("stcs-draft-summary");
     if (draftSummaryEl instanceof HTMLTextAreaElement) {
       draftSummaryEl.value = text;
-      draftSummaryEl.dispatchEvent(new Event("input", { bubbles: true }));
     }
   };
 
@@ -2281,7 +2292,7 @@ async function generateDraftCheckpoint(options = {}) {
       ? countTokens(buildPreviousSummariesText(start))
       : 0;
 
-    forceSetDraftTextareaValue(normalizedSummary);
+    forceSetDraftTextareaValue(normalizedSummary, { start, end });
 
     saveState();
     renderStatus();

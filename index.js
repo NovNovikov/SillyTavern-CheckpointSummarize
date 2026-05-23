@@ -509,22 +509,6 @@ async function runAutoMode() {
   if (!state.enabled || !state.settings.autoModeEnabled) return;
   const autoDrainMode = !!state.settings.autoModeEnabled && !!state.settings.autoApproveEnabled;
 
-  // Auto-heal empty/0-0 range before generation path (only when no draft text exists).
-  if (!hasVisibleText(state.draft.summary ?? "")) {
-    const chatNow = getChatMessages();
-    const firstGapNow = getFirstGapInfo(chatNow.length);
-    if (firstGapNow) {
-      const preRange = getDraftRange(state.draft);
-      if (!preRange || isZeroZeroRange(preRange)) {
-        autoSelectNextRange();
-        const postRange = getDraftRange(getState().draft);
-        setAutoModeRangeDebugInfo(
-          `preselect gap ${Number(firstGapNow.start)}-${Number(firstGapNow.end)} | before: ${preRange ? `${preRange.start}-${preRange.end}` : "empty"} | after: ${postRange ? `${postRange.start}-${postRange.end}` : "empty"}`,
-        );
-      }
-    }
-  }
-
   // If a draft already exists and auto-approve is enabled, try to lock it first.
   // This prevents No Brain from stalling forever on a non-empty draft.
   if (hasVisibleText(state.draft.summary ?? "")) {
@@ -632,12 +616,8 @@ async function runAutoMode() {
       const revisionBeforeGeneration = getBlocksRevision(loopState);
 
       const rangeBeforeSelect = getDraftRange(loopState.draft);
-      const needAutoSelectBefore = !isDraftRangeInsideGap(loopState.draft, loopStartIndex, loopGapEnd)
-        || isZeroZeroRange(rangeBeforeSelect)
-        || isZeroZeroPlaceholder(rangeBeforeSelect, loopStartIndex, loopGapEnd);
-      if (needAutoSelectBefore) {
-        autoSelectNextRange();
-      }
+      // Auto mode source of truth: current first gap from coverage, not UI fields.
+      autoSelectNextRange({ start: loopStartIndex, end: loopGapEnd });
       const selectedRangeState = getState();
       const rangeAfterSelect = getDraftRange(selectedRangeState.draft);
       setAutoModeRangeDebugInfo(
@@ -1999,7 +1979,7 @@ function getMaxPromptTokensSafe() {
   return 16000;
 }
 
-function autoSelectNextRange() {
+function autoSelectNextRange(gapOverride = null) {
   const state = getState();
   const chat = getChatMessages();
 
@@ -2013,7 +1993,9 @@ function autoSelectNextRange() {
     return;
   }
 
-  const firstGap = getFirstGapInfo(chat.length);
+  const firstGap = gapOverride && Number.isInteger(Number(gapOverride?.start)) && Number.isInteger(Number(gapOverride?.end))
+    ? { start: Number(gapOverride.start), end: Number(gapOverride.end) }
+    : getFirstGapInfo(chat.length);
   if (!firstGap) {
     state.draft.startIndex = null;
     state.draft.endIndex = null;
@@ -2736,6 +2718,10 @@ function deleteBlock(blockElement) {
   state.blocks.splice(idx, 1);
   bumpBlocksRevision(state);
   saveState();
+  if (state.settings.autoModeEnabled) {
+    // Recompute current first gap immediately after deletion.
+    autoSelectNextRange();
+  }
   renderStatus();
   scheduleAutoModeRun();
   toastr.success(`Checkpoint ${blockId} deleted.`, MODULE_NAME);

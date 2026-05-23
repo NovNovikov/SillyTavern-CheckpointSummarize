@@ -84,7 +84,7 @@ const DEFAULT_STATE = {
     includeAllPreviousSummaries: true,
     autoModeEnabled: false,
     autoApproveEnabled: false,
-    noBrainModeEnabled: false,
+    noBrainModeEnabled: true,
     connectionProfile: "",
     useProfilePromptStack: true,
     useWorldbookInDraft: true,

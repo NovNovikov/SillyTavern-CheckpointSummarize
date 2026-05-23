@@ -1054,11 +1054,18 @@ function calculateMessageRangeTokens(startIndex, endIndex) {
   return total;
 }
 
-function buildPreviousSummariesText() {
+function buildPreviousSummariesText(beforeStartIndex = null) {
   const locked = getChronologicalLockedBlocks();
   if (!locked.length) return "";
+  const hasBoundary = Number.isInteger(Number(beforeStartIndex)) && Number(beforeStartIndex) >= 0;
+  const boundary = Number(beforeStartIndex);
   return locked
     .filter((b) => b.locked === true && b.inject !== false)
+    .filter((b) => {
+      if (!hasBoundary) return true;
+      if (!isRangeCheckpoint(b)) return false;
+      return Number(b.endIndex) < boundary;
+    })
     .map((b, idx) => {
       const rangeLabel = isRangeCheckpoint(b) ? `${b.startIndex}-${b.endIndex}` : "memory-only";
       return `[Checkpoint ${String(idx + 1).padStart(3, "0")} | messages ${rangeLabel}]\n${String(b.summary ?? "").trim()}`;
@@ -1603,7 +1610,7 @@ function buildSummaryPrompt() {
   const draft = state.draft;
   const startIndex = Number(draft.startIndex);
   const endIndex = Number(draft.endIndex);
-  const previousSummaries = state.settings.includeAllPreviousSummaries ? buildPreviousSummariesText() : "";
+  const previousSummaries = state.settings.includeAllPreviousSummaries ? buildPreviousSummariesText(startIndex) : "";
   const rawBlock = buildRawBlockText(startIndex, endIndex);
   const checkpointNumber = getLockedBlocks().length + 1;
   const targetSummaryTokens = Number(state.settings.targetSummaryTokens || 0);
@@ -2013,7 +2020,7 @@ function autoSelectNextRange() {
   const startIndex = Number(firstGap.start);
   const gapEndIndex = Number(firstGap.end);
 
-  const previousSummariesText = state.settings.includeAllPreviousSummaries ? buildPreviousSummariesText() : "";
+  const previousSummariesText = state.settings.includeAllPreviousSummaries ? buildPreviousSummariesText(startIndex) : "";
   const previousSummariesTokenCount = countTokens(previousSummariesText);
   const summaryInstructionsTokens = countTokens(state.settings.summaryPromptTemplate || DEFAULT_SUMMARY_PROMPT_TEMPLATE);
   const budgetBase = getCheckpointContextBudgetBase();
@@ -2154,7 +2161,7 @@ async function generateDraftCheckpoint(options = {}) {
     state.draft.generatedAt = Date.now();
     state.draft.sourceTokenCount = calculateMessageRangeTokens(start, end);
     state.draft.previousSummariesTokenCount = state.settings.includeAllPreviousSummaries
-      ? countTokens(buildPreviousSummariesText())
+      ? countTokens(buildPreviousSummariesText(start))
       : 0;
 
     forceSetDraftTextareaValue(normalizedSummary);
@@ -2802,7 +2809,7 @@ function updateDraftRangeFromInputs() {
     state.draft.startIndex = start;
     state.draft.endIndex = end;
     state.draft.sourceTokenCount = calculateMessageRangeTokens(start, end);
-    state.draft.previousSummariesTokenCount = state.settings.includeAllPreviousSummaries ? countTokens(buildPreviousSummariesText()) : 0;
+    state.draft.previousSummariesTokenCount = state.settings.includeAllPreviousSummaries ? countTokens(buildPreviousSummariesText(start)) : 0;
   }
 
   saveState();

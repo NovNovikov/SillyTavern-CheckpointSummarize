@@ -1,145 +1,136 @@
-# SillyTavern-CheckpointSummarize — Руководство пользователя
+# SillyTavern-CheckpointSummarize — User Manual
 
-## Что это
-`SillyTavern-CheckpointSummarize` — расширение для SillyTavern, которое сохраняет длинную историю чата в виде последовательности чекпоинтов.
+## What It Is
+`SillyTavern-CheckpointSummarize` is a third-party SillyTavern extension for long chat memory management.
 
-Каждый чекпоинт содержит:
-- диапазон сообщений;
-- summary только для этого диапазона;
-- статус инъекции в основной промпт.
+It stores chat history as locked checkpoint summaries:
+- each checkpoint summarizes only its own message range;
+- locked checkpoints are injected as long-term memory;
+- new drafts can optionally use previous locked summaries as read-only context.
 
-Логика памяти:
-1. Берется новый сырой блок сообщений.
-2. Модель делает черновик summary для этого блока.
-3. Summary проверяется/фиксируется в чекпоинт.
-4. Чекпоинты инжектятся в основной промпт как долгосрочная память.
-
-## Установка
-1. Откройте SillyTavern.
-2. Перейдите в Extensions.
-3. Установите по URL репозитория:
+## Installation
+1. Open SillyTavern.
+2. Go to Extensions.
+3. Install from URL:
    - `https://github.com/NovNovikov/SillyTavern-CheckpointSummarize`
-4. Перезапустите Tavern при необходимости.
+4. Restart SillyTavern if needed.
 
-## Быстрый старт (рекомендуется)
-1. Включите `Enable extension`.
-2. Включите `Enable prompt injection`.
-3. Выберите `Connection Profile` без reasoning для стабильного summary.
-4. Включите `One-click Auto mode`.
-5. Дождитесь, пока появятся первые чекпоинты в `Current Summary`.
+## Quick Start (Recommended)
+1. Enable `Enable extension`.
+2. Enable `Enable prompt injection`.
+3. Select a `Connection Profile` (preferably a non-reasoning profile for summary generation).
+4. Enable `One-click Auto mode`.
+5. Wait until first checkpoints appear in `Current Summary`.
 
-## Режимы работы
+## Modes
 
-## Ручной режим
-Подходит, если вы хотите полностью контролировать диапазоны и текст summary.
+### Manual Mode
+Use when you want full control over ranges and summary text.
 
-Основной порядок:
-1. Нажмите `Autoselect next block`.
-2. При необходимости нажмите `Set limits from range`.
-3. Нажмите `Generate draft`.
-4. Отредактируйте текст в `Draft checkpoint summary`.
-5. Нажмите `Lock Checkpoint`.
+Flow:
+1. Click `Autoselect next block`.
+2. Optional: click `Set limits from range`.
+3. Click `Generate draft`.
+4. Edit text in `Draft checkpoint summary`.
+5. Click `Lock Checkpoint`.
 
-## Полуавтомат/автомат
-Используются чекбоксы:
+### Auto / Semi-auto
+Controlled by:
 - `Auto mode: generate draft when unsummarized tail reaches target block tokens`
 - `Auto approve: auto-lock generated draft in auto mode`
 
-Поведение:
-1. Когда хвост несуммаризованных сообщений достигает лимита блока, запускается генерация.
-2. Если `Auto approve` включен, черновик сразу фиксируется как чекпоинт.
-3. Если `Auto approve` выключен, черновик остается для ручной проверки.
+Behavior:
+1. When unsummarized tail reaches block target, generation starts.
+2. If `Auto approve` is ON, draft is locked automatically.
+3. If `Auto approve` is OFF, draft stays for manual review.
 
-## One-click Auto mode
-Это пресет «включил и работает»:
-- скрывает/блокирует часть ручных контролов;
-- держит автоцикл активным;
-- пересчитывает лимиты под текущую ситуацию;
-- продолжает генерацию, пока есть валидный gap для суммаризации.
+### One-click Auto mode
+Preset mode that prioritizes automation:
+- hides/locks part of manual controls;
+- keeps maintenance cycle active;
+- recalculates limits for current chat state;
+- keeps summarizing valid gaps.
 
-## Настройки, которые важно понимать
+## Important Settings
 
-## Context Compression value
-Определяет целевой коэффициент сжатия summary относительно сырого блока:
+### Context Compression value
+Summary compression ratio presets:
 - `Huge compression (1/70)`
 - `Normal compression (1/50)`
 - `Light compression (1/35)`
 - `Endless VRAM (1/20)`
 
-Меньший делитель = длиннее summary.
+Lower divisor means longer summaries.
 
-## Target raw block tokens
-Целевой размер сырого блока для одного чекпоинта.
+### Target raw block tokens
+Target raw message block size per checkpoint.
 
-## Target summary tokens
-Целевая длина summary.
+### Target summary tokens
+Target summary size.
 
-## Safety margin tokens
-Резерв токенов, чтобы избежать переполнения контекста.
+### Safety margin tokens
+Reserved tokens to reduce overflow risk.
 
-## Injection position
-Куда вставлять чекпоинты в основной промпт. Для большинства RP-сценариев рекомендован `After World info`.
+### Injection position
+Where checkpoint memory is injected into the main prompt.
+For most RP cases, `After World info` is recommended.
 
-## Include all previous locked summaries in draft generation
-Если включено, при генерации нового чекпоинта используются только более ранние чекпоинты (без «утечки будущего» в прошлый диапазон).
+### Include all previous locked summaries in draft generation
+When enabled, draft context includes only truly earlier checkpoints (prevents future-to-past leakage).
 
-## Работа с чекпоинтами
-Блок `Current Summary` показывает список чекпоинтов.
+## Checkpoint Management
+In `Current Summary`:
+- `View/Edit summary` — show/hide full summary text;
+- `Save edits` — save edited text;
+- `Delete checkpoint` — remove checkpoint and reopen its range as unsummarized gap;
+- `Disable/Enable injection` — exclude/include checkpoint in memory injection.
 
-Кнопки:
-- `View/Edit summary` — открыть/скрыть полный текст.
-- `Save edits` — сохранить правки текста.
-- `Delete checkpoint` — удалить чекпоинт и вернуть его диапазон в несуммаризованный gap.
-- `Disable/Enable injection` — исключить/включить чекпоинт в общий memory-injection.
-
-## Импорт и экспорт
-Поддерживается:
+## Import / Export
+Supported:
 - `Export checkpoints`
 - `Export current summary`
 - `Import checkpoints`
 - `Import current summary`
 
-Импорт из другого чата:
-- при несовпадении хешей диапазонов записи переводятся в `memory-only`;
-- такие записи не считаются валидным покрытием диапазона сообщений.
+Cross-chat import behavior:
+- if message hashes/ranges do not match, records become `memory-only`;
+- `memory-only` records do not count as normal range coverage.
 
-## Что смотреть в статусе
-Статусная строка показывает:
-- включенность расширения и авто-режима;
-- число locked чекпоинтов;
-- суммаризованные/несуммаризованные токены;
-- первый gap;
-- текущее состояние цикла:
+## Status Line
+The status line shows:
+- extension/auto mode state;
+- locked checkpoint count;
+- summarized/unsummarized token estimates;
+- first coverage gap;
+- current cycle state:
   - `summary generation in progress`
   - `waiting for unsummarized tokens to reach the batch limit`
   - `Idle`
   - `error`
 
-## Частые проблемы и решения
+## Common Issues
 
-## Не создается draft
-Проверьте:
-1. Выбран рабочий `Connection Profile`.
-2. Бэкенд реально доступен.
-3. Нет переполнения контекста.
-4. Диапазон сообщений валиден (не `0-0` как ошибка состояния).
+### Draft generation fails
+Check:
+1. Selected `Connection Profile` is valid.
+2. Backend is reachable.
+3. Context is not overloaded.
+4. Draft range is valid.
 
-## Автоцикл «ждет», хотя чекпоинтов мало
-Это нормально, если текущий хвост меньше порога блока. Либо ждите роста хвоста, либо уменьшите `Target raw block tokens`.
+### Auto mode waits too long
+Usually means unsummarized tail is below target block size.
+Wait for more messages or lower `Target raw block tokens`.
 
-## После удаления чекпоинта
-Удаленный диапазон становится gap и должен быть пересобран автоциклом (в auto/one-click режимах).
+### After deleting a checkpoint
+Its range becomes a gap and should be rebuilt by auto cycle (in auto/one-click modes).
 
-## Рекомендуемый рабочий сценарий для длинных RP-чатов
-1. Профиль summary без reasoning.
-2. `Enable extension` + `Enable prompt injection`.
-3. `One-click Auto mode`.
-4. Периодически проверяйте `Current Summary`.
-5. Редактируйте только действительно важные чекпоинты.
-6. Делайте экспорт чекпоинтов как бэкап.
+## Recommended Workflow for Long RP Chats
+1. Use a non-reasoning profile for summarization.
+2. Keep `Enable extension` and `Enable prompt injection` ON.
+3. Use `One-click Auto mode`.
+4. Review `Current Summary` periodically.
+5. Edit only important checkpoints.
+6. Export checkpoints regularly as backups.
 
-## Совместимость
-Расширение не требует правок ядра SillyTavern и работает как сторонний extension.
-
-## Репозиторий
+## Repository
 - `https://github.com/NovNovikov/SillyTavern-CheckpointSummarize`

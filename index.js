@@ -532,14 +532,11 @@ async function runAutoMode() {
       const chatNow = getChatMessages();
       const existingRange = getDraftRange(state.draft);
       const firstGapNow = getFirstGapInfo(chatNow.length);
-      const existingOutsideFirstGap = firstGapNow && existingRange
-        ? !isDraftRangeInsideGap(state.draft, Number(firstGapNow.start), Number(firstGapNow.end))
-        : false;
       const existingLooksPlaceholder = firstGapNow
         ? isZeroZeroPlaceholder(existingRange, Number(firstGapNow.start), Number(firstGapNow.end))
         : false;
       const existingIsZeroZero = isZeroZeroRange(existingRange);
-      if (!existingRange || existingRange.end >= chatNow.length || existingLooksPlaceholder || existingIsZeroZero || existingOutsideFirstGap) {
+      if (!existingRange || existingRange.end >= chatNow.length || existingLooksPlaceholder || existingIsZeroZero) {
         state.draft.startIndex = null;
         state.draft.endIndex = null;
         state.draft.sourceTokenCount = 0;
@@ -548,7 +545,7 @@ async function runAutoMode() {
         state.draft.generatedAt = null;
         saveState();
         renderStatus();
-        setAutoModeRangeDebugInfo("stale draft cleared (invalid/outside-gap/placeholder/0-0 range)");
+        setAutoModeRangeDebugInfo("stale draft cleared (invalid/placeholder/0-0 range)");
         scheduleAutoModeRun();
         return;
       }

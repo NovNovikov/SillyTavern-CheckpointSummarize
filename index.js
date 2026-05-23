@@ -2825,13 +2825,19 @@ function updateDraftRangeFromInputs() {
 function renderStatus() {
   const state = getState();
   const tavernGenerating = isTavernGenerationActive();
-  if (!tavernGenerating && (autoModeInFlight || draftGenerationInFlight)) {
-    autoModeInFlight = false;
-    draftGenerationInFlight = false;
-    activeAutoModeRunId = 0;
-    activeDraftGenerationRunId = 0;
+  const orphanDraftInFlight = draftGenerationInFlight && activeDraftGenerationRunId === 0;
+  const orphanAutoInFlight = autoModeInFlight && activeAutoModeRunId === 0;
+  if (!tavernGenerating && (orphanAutoInFlight || orphanDraftInFlight)) {
+    if (orphanAutoInFlight) {
+      autoModeInFlight = false;
+      activeAutoModeRunId = 0;
+    }
+    if (orphanDraftInFlight) {
+      draftGenerationInFlight = false;
+      activeDraftGenerationRunId = 0;
+    }
     setAutoModeUiLock(false);
-    setAutoModeRangeDebugInfo("self-heal: Tavern idle, extension in-flight flags reset");
+    setAutoModeRangeDebugInfo("self-heal: orphan in-flight flags reset");
     scheduleAutoModeRun();
   }
   if (!autoModeInFlight && !draftGenerationInFlight && autoModeUiLocked) {

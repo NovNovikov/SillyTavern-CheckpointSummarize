@@ -331,6 +331,10 @@ let autoModeInFlight = false;
 let autoModeLastAttemptKey = "";
 let autoModeUiLocked = false;
 let draftGenerationInFlight = false;
+let autoModeRunSeq = 0;
+let activeAutoModeRunId = 0;
+let draftGenerationRunSeq = 0;
+let activeDraftGenerationRunId = 0;
 let lastWorldInfoResolutionReason = "not attempted yet";
 let lastExtensionStatusError = "";
 let autoModeRangeDebugInfo = "n/a";
@@ -355,6 +359,82 @@ function setAutoModeRangeDebugInfo(text) {
   autoModeRangeDebugInfo = String(text ?? "").trim() || "n/a";
 }
 
+function isRussianUiLanguage() {
+  const htmlLang = String(document?.documentElement?.lang ?? "").toLowerCase();
+  const i18nLang = String(globalThis?.i18next?.language ?? "").toLowerCase();
+  const browserLang = String(globalThis?.navigator?.language ?? "").toLowerCase();
+  const combined = `${htmlLang}|${i18nLang}|${browserLang}`;
+  return combined.includes("ru");
+}
+
+function applyLocalizedTooltips() {
+  if (!isRussianUiLanguage()) return;
+
+  const setTitle = (selector, text) => {
+    document.querySelectorAll(selector).forEach((el) => {
+      if (el instanceof HTMLElement) {
+        el.title = text;
+      }
+    });
+  };
+
+  const byId = {
+    "stcs-root-drawer-header": "Открыть или свернуть настройки CheckpointSummarize",
+    "stcs-current-summary-drawer-header": "Открыть или свернуть список чекпоинтов и предпросмотр памяти",
+    "stcs-summary-prompts-drawer-header": "Открыть или свернуть шаблоны промптов саммари и инъекции",
+    "stcs-no-brain-mode": "Режим одной кнопки: включает рекомендованные автоматические настройки",
+    "stcs-enabled": "Включить или отключить расширение для текущего чата",
+    "stcs-injection-enabled": "Вставлять заблокированные чекпоинты в основной промпт",
+    "stcs-use-profile-prompt-stack": "Использовать полный стек промптов профиля подключения при генерации драфта",
+    "stcs-use-worldbook-in-draft": "Использовать World Info при генерации драфта",
+    "stcs-include-prev-summaries": "Передавать все предыдущие зафиксированные саммари как контекст",
+    "stcs-auto-mode-enabled": "Автоматически генерировать саммари, когда несуммаризованный хвост достигает размера блока",
+    "stcs-auto-approve-enabled": "Автоматически фиксировать сгенерированный драфт как чекпоинт",
+    "stcs-connection-profile": "Профиль подключения для генерации саммари",
+    "stcs-target-raw-block-tokens": "Целевой размер сырого блока сообщений в токенах",
+    "stcs-target-summary-tokens": "Целевой размер саммари в токенах",
+    "stcs-safety-margin-tokens": "Резерв токенов для защиты от переполнения контекста",
+    "stcs-injection-position": "Куда вставлять память чекпоинтов в промпт",
+    "stcs-injection-depth": "Глубина для режима вставки в чат",
+    "stcs-injection-role": "Роль сообщения для вставленной памяти",
+    "stcs-injection-scan": "Разрешить сканирование вставленной памяти модулем World Info",
+    "stcs-calc-max-context": "Максимальный размер контекста бэкенда",
+    "stcs-calc-expected-response": "Ожидаемый размер ответа в токенах",
+    "stcs-calc-lorebook": "Оценка токенов Lorebook/World Info",
+    "stcs-calc-system": "Оценка токенов системной инструкции",
+    "stcs-calc-character": "Оценка токенов карточки персонажа",
+    "stcs-calc-apply": "Пересчитать лимиты блока и саммари по данным калькулятора",
+    "stcs-calc-autofill-itemization": "Автозаполнение калькулятора из последней itemization чата",
+    "stcs-start-index": "Начальный индекс сообщения для суммаризации",
+    "stcs-end-index": "Конечный индекс сообщения для суммаризации",
+    "stcs-auto-select-next-block": "Автоматически выбрать следующий несуммаризованный диапазон",
+    "stcs-calc-limits-from-range": "Выставить лимиты по размеру выбранного диапазона",
+    "stcs-generate-draft": "Сгенерировать драфт саммари по выбранному диапазону",
+    "stcs-lock-checkpoint": "Зафиксировать текущий драфт как неизменяемый чекпоинт",
+    "stcs-clear-draft": "Очистить драфт и оставить рабочий диапазон",
+    "stcs-draft-summary": "Редактируемый текст драфта перед фиксацией",
+    "stcs-export-checkpoints": "Экспортировать все чекпоинты в файл",
+    "stcs-export-current-summary": "Экспортировать текущую сводную память в файл",
+    "stcs-import-checkpoints": "Импортировать чекпоинты из ранее экспортированного файла",
+    "stcs-import-current-summary": "Импортировать текущую сводную память из файла",
+    "stcs-summary-template": "Шаблон промпта для генерации нового саммари чекпоинта",
+    "stcs-injection-template": "Шаблон вставки зафиксированных чекпоинтов в основной промпт",
+  };
+
+  Object.entries(byId).forEach(([id, title]) => {
+    const el = document.getElementById(id);
+    if (el instanceof HTMLElement) {
+      el.title = title;
+    }
+  });
+
+  setTitle(".stcs-action-view", "Открыть или скрыть полный редактор саммари этого чекпоинта");
+  setTitle(".stcs-action-save", "Сохранить изменения саммари этого чекпоинта");
+  setTitle(".stcs-action-delete", "Удалить чекпоинт и открыть его диапазон как несуммаризованный");
+  setTitle(".stcs-action-toggle-inject", "Включить или выключить инъекцию этого чекпоинта в память");
+  setTitle(".stcs-block-editor", "Редактируемый полный текст саммари этого чекпоинта");
+}
+
 function isTavernGenerationActive() {
   try {
     if (typeof isGenerating === "function") {
@@ -364,6 +444,16 @@ function isTavernGenerationActive() {
     // fallback below
   }
   return !!is_send_press;
+}
+
+function isExtensionGenerationActive() {
+  return !!(
+    autoModeUiLocked
+    || autoModeInFlight
+    || draftGenerationInFlight
+    || activeAutoModeRunId !== 0
+    || activeDraftGenerationRunId !== 0
+  );
 }
 
 function setAutoModeUiLock(locked) {
@@ -410,9 +500,11 @@ function scheduleAutoModeRun() {
 }
 
 async function runAutoMode() {
-  if (autoModeInFlight) return;
+  if (autoModeInFlight || activeAutoModeRunId !== 0) return;
   if (is_send_press) return;
 
+  const autoRunId = ++autoModeRunSeq;
+  const isCurrentAutoRun = () => activeAutoModeRunId === autoRunId;
   const state = getState();
   if (!state.enabled || !state.settings.autoModeEnabled) return;
   const autoDrainMode = !!state.settings.autoModeEnabled && !!state.settings.autoApproveEnabled;
@@ -458,6 +550,7 @@ async function runAutoMode() {
         return;
       }
       autoModeInFlight = true;
+      activeAutoModeRunId = autoRunId;
       try {
         setAutoModeUiLock(true);
         const lockOk = await lockDraftCheckpoint({ silent: true, forbidZeroZero: true });
@@ -471,10 +564,15 @@ async function runAutoMode() {
         }
       } catch (error) {
         console.warn(`[${MODULE_NAME}] Auto mode failed to lock existing draft`, error);
-        setExtensionStatusError(String(error?.message ?? error ?? "auto mode lock existing draft failed"));
+        if (isCurrentAutoRun()) {
+          setExtensionStatusError(String(error?.message ?? error ?? "auto mode lock existing draft failed"));
+        }
       } finally {
-        setAutoModeUiLock(false);
-        autoModeInFlight = false;
+        if (isCurrentAutoRun()) {
+          setAutoModeUiLock(false);
+          autoModeInFlight = false;
+          activeAutoModeRunId = 0;
+        }
       }
     }
     return;
@@ -499,6 +597,7 @@ async function runAutoMode() {
   }
 
   autoModeInFlight = true;
+  activeAutoModeRunId = autoRunId;
   let shouldRetrySoon = false;
   try {
     setAutoModeUiLock(true);
@@ -506,7 +605,7 @@ async function runAutoMode() {
     const maxCycles = autoDrainMode ? 500 : 1;
 
     while (safetyCycles < maxCycles) {
-      if (is_send_press) break;
+      if (!isCurrentAutoRun() || is_send_press) break;
 
       const loopState = getState();
       if (!loopState.enabled || !loopState.settings.autoModeEnabled) break;
@@ -522,7 +621,9 @@ async function runAutoMode() {
       const loopIsMiddleGap = !!loopGap.hasCoveredContentAfter;
       const loopUnsummarizedTokens = calculateMessageRangeTokens(loopStartIndex, loopGapEnd);
       const loopTargetTokens = getEffectiveRawBlockTargetTokens(loopState);
-      if (!loopIsMiddleGap && loopUnsummarizedTokens < loopTargetTokens) break;
+      if (!loopIsMiddleGap && loopUnsummarizedTokens < loopTargetTokens) {
+        break;
+      }
       const loopAutoDrainMode = !!loopState.settings.autoModeEnabled && !!loopState.settings.autoApproveEnabled;
 
       const attemptKey = `${loopChat.length}:${loopStartIndex}-${loopGapEnd}:${loopTargetTokens}:${loopAutoDrainMode ? "drain" : "std"}`;
@@ -550,6 +651,7 @@ async function runAutoMode() {
         break;
       }
       await generateDraftCheckpoint({ skipPostNoBrainMaintenance: true });
+      if (!isCurrentAutoRun()) break;
 
       const nextState = getState();
       const revisionAfterGeneration = getBlocksRevision(nextState);
@@ -586,22 +688,26 @@ async function runAutoMode() {
     }
   } catch (error) {
     console.warn(`[${MODULE_NAME}] Auto mode draft generation failed`, error);
-    setExtensionStatusError(String(error?.message ?? error ?? "auto mode routine failed"));
-    shouldRetrySoon = true;
+    if (isCurrentAutoRun()) {
+      setExtensionStatusError(String(error?.message ?? error ?? "auto mode routine failed"));
+      shouldRetrySoon = true;
+    }
   } finally {
-    setAutoModeUiLock(false);
-    autoModeInFlight = false;
-    // Do not freeze future runs on the same range after a transient startup/backend failure.
-    autoModeLastAttemptKey = "";
-    const endState = getState();
-    if (
-      shouldRetrySoon
-      && endState?.enabled
-      && endState?.settings?.autoModeEnabled
-      && endState?.settings?.noBrainModeEnabled
-      && !is_send_press
-    ) {
-      setTimeout(() => scheduleAutoModeRun(), 1500);
+    if (isCurrentAutoRun()) {
+      setAutoModeUiLock(false);
+      autoModeInFlight = false;
+      activeAutoModeRunId = 0;
+      // Do not freeze future runs on the same range after a transient startup/backend failure.
+      autoModeLastAttemptKey = "";
+      const endState = getState();
+      if (
+        shouldRetrySoon
+        && endState?.enabled
+        && endState?.settings?.autoModeEnabled
+        && !is_send_press
+      ) {
+        setTimeout(() => scheduleAutoModeRun(), 5000);
+      }
     }
   }
 }
@@ -1331,7 +1437,7 @@ function appendImportedBlocks(rawBlocks) {
 
 async function importCheckpoints() {
   try {
-    if (autoModeInFlight || draftGenerationInFlight) {
+    if (isExtensionGenerationActive()) {
       toastr.warning("Import is temporarily blocked while generation is active.", MODULE_NAME);
       return;
     }
@@ -1363,7 +1469,7 @@ async function importCheckpoints() {
 
 async function importCurrentSummary() {
   try {
-    if (autoModeInFlight || draftGenerationInFlight) {
+    if (isExtensionGenerationActive()) {
       toastr.warning("Import is temporarily blocked while generation is active.", MODULE_NAME);
       return;
     }
@@ -1446,12 +1552,12 @@ function renderLockedBlocksList() {
         ${warningHtml}
         <div class="stcs-preview">${escapeHtml(preview || "(empty summary)")}</div>
         <div class="stcs-row">
-          <button class="menu_button stcs-action-view">View/Edit summary</button>
-          <button class="menu_button stcs-action-save">Save edits</button>
-          <button class="menu_button stcs-action-delete">Delete checkpoint</button>
-          <button class="menu_button stcs-action-toggle-inject">${injectEnabled ? "Disable injection" : "Enable injection"}</button>
+          <button class="menu_button stcs-action-view" title="Open or hide full summary text editor for this checkpoint">View/Edit summary</button>
+          <button class="menu_button stcs-action-save" title="Save edited summary text for this checkpoint">Save edits</button>
+          <button class="menu_button stcs-action-delete" title="Delete this checkpoint and reopen its range as unsummarized">Delete checkpoint</button>
+          <button class="menu_button stcs-action-toggle-inject" title="${injectEnabled ? "Exclude this checkpoint from prompt injection" : "Include this checkpoint in prompt injection"}">${injectEnabled ? "Disable injection" : "Enable injection"}</button>
         </div>
-        <textarea class="text_pole stcs-block-editor" rows="8" style="display:none;">${escapeHtml(block.summary ?? "")}</textarea>
+        <textarea class="text_pole stcs-block-editor" rows="8" style="display:none;" title="Editable full summary text for this checkpoint">${escapeHtml(block.summary ?? "")}</textarea>
       </div>
     `;
   }).join("\n");
@@ -1950,15 +2056,32 @@ function autoSelectNextRange() {
 
 async function generateDraftCheckpoint(options = {}) {
   const { skipPostNoBrainMaintenance = false } = options;
+  if (draftGenerationInFlight || activeDraftGenerationRunId !== 0) {
+    toastr.warning("Draft generation is already in progress.", MODULE_NAME);
+    return;
+  }
   const state = getState();
   const draftRange = getDraftRange(state.draft);
   const generateBtn = document.getElementById("stcs-generate-draft");
+  const chat = getChatMessages();
 
   if (!draftRange) {
     toastr.warning("Please select a valid message range first.", MODULE_NAME);
     return;
   }
   const { start, end } = draftRange;
+  if (start === 0 && end === 0 && chat.length > 1) {
+    state.draft.startIndex = null;
+    state.draft.endIndex = null;
+    state.draft.sourceTokenCount = 0;
+    state.draft.previousSummariesTokenCount = 0;
+    state.draft.summary = "";
+    state.draft.generatedAt = null;
+    saveState();
+    renderStatus();
+    toastr.warning("Range 0-0 is blocked. Use Autoselect next block to pick a valid range.", MODULE_NAME);
+    return;
+  }
 
   const rawBlock = buildRawBlockText(start, end);
   if (!rawBlock.trim()) {
@@ -1973,6 +2096,8 @@ async function generateDraftCheckpoint(options = {}) {
   const promptBudget = budgetBase.availableAfterMandatory
     - Number(state.settings.safetyMarginTokens || 0)
     - targetSummaryTokens;
+  const draftRunId = ++draftGenerationRunSeq;
+  const isCurrentDraftRun = () => activeDraftGenerationRunId === draftRunId;
 
   if (promptTokens > promptBudget) {
     toastr.warning(
@@ -1983,6 +2108,7 @@ async function generateDraftCheckpoint(options = {}) {
   }
 
   try {
+    activeDraftGenerationRunId = draftRunId;
     draftGenerationInFlight = true;
     clearExtensionStatusError();
     applyNoBrainUiLock();
@@ -2016,6 +2142,7 @@ async function generateDraftCheckpoint(options = {}) {
         return String(rawSummary ?? "").trim();
       }
     });
+    if (!isCurrentDraftRun()) return;
 
     const normalizedSummary = normalizeSummaryOutput(summary);
     if (!hasVisibleText(normalizedSummary)) {
@@ -2041,6 +2168,7 @@ async function generateDraftCheckpoint(options = {}) {
     toastr.success("Draft checkpoint generated.", MODULE_NAME);
   } catch (error) {
     console.error(`[${MODULE_NAME}] Draft generation failed`, error);
+    if (!isCurrentDraftRun()) return;
     const message = String(error?.message ?? error ?? "Unknown error");
     setExtensionStatusError(message);
     if (/mandatory prompts exceed the context size/i.test(message)) {
@@ -2052,9 +2180,12 @@ async function generateDraftCheckpoint(options = {}) {
     }
     toastr.error(`Failed to generate checkpoint draft: ${message}`, MODULE_NAME);
   } finally {
-    if (generateBtn) generateBtn.disabled = false;
-    draftGenerationInFlight = false;
-    applyNoBrainUiLock();
+    if (isCurrentDraftRun()) {
+      if (generateBtn) generateBtn.disabled = false;
+      draftGenerationInFlight = false;
+      activeDraftGenerationRunId = 0;
+      applyNoBrainUiLock();
+    }
   }
 }
 
@@ -2089,7 +2220,7 @@ async function lockDraftCheckpoint(options = {}) {
     return false;
   }
 
-  if (forbidZeroZero && draftRange.start === 0 && draftRange.end === 0) {
+  if (draftRange.start === 0 && draftRange.end === 0) {
     state.draft.startIndex = null;
     state.draft.endIndex = null;
     state.draft.sourceTokenCount = 0;
@@ -2098,7 +2229,10 @@ async function lockDraftCheckpoint(options = {}) {
     state.draft.generatedAt = null;
     saveState();
     renderStatus();
-    setAutoModeRangeDebugInfo("0-0 draft dropped before lock");
+    setAutoModeRangeDebugInfo(forbidZeroZero ? "0-0 draft dropped before auto-lock" : "0-0 draft dropped before lock");
+    if (!silent) {
+      toastr.warning("Range 0-0 is blocked. Use Autoselect next block to pick a valid range.", MODULE_NAME);
+    }
     return false;
   }
   const { start, end } = draftRange;
@@ -2219,7 +2353,7 @@ async function runNoBrainMaintenanceCycle(options = {}) {
     saveState();
     renderStatus();
     if (!silent) {
-      toastr.info(`No Brain cap applied: raw block target limited to ${NO_BRAIN_MAX_RAW_BLOCK_TOKENS} tokens.`, MODULE_NAME);
+      toastr.info(`One-click Auto cap applied: raw block target limited to ${NO_BRAIN_MAX_RAW_BLOCK_TOKENS} tokens.`, MODULE_NAME);
     }
   }
   autoSelectNextRange();
@@ -2245,7 +2379,7 @@ function applyNoBrainUiLock() {
     "stcs-import-checkpoints",
     "stcs-import-current-summary",
   ]);
-  const generationActive = autoModeUiLocked || draftGenerationInFlight;
+  const generationActive = isExtensionGenerationActive();
   const setControlHidden = (element, hidden) => {
     if (!(element instanceof HTMLElement)) return;
     const wrapper = element instanceof HTMLButtonElement
@@ -2273,14 +2407,26 @@ function applyNoBrainUiLock() {
     ) return;
 
     const id = String(el.id ?? "");
+    const isSummaryEditorTextarea = (
+      (el instanceof HTMLTextAreaElement)
+      && (id === "stcs-draft-summary" || el.classList.contains("stcs-block-editor"))
+    );
     if (el instanceof HTMLButtonElement) {
       const isCheckpointActionButton = !!el.closest("#stcs-locked-list");
       if (isCheckpointActionButton) {
+        const isEditAction = el.classList.contains("stcs-action-edit");
         const isInjectToggleAction = el.classList.contains("stcs-action-toggle-inject");
         const isSaveOrDeleteAction = !!(
           el.classList.contains("stcs-action-save")
           || el.classList.contains("stcs-action-delete")
         );
+        if (generationActive) {
+          const generationLocked = !isEditAction;
+          el.disabled = generationLocked;
+          const hideByNoBrain = noBrainOn && generationLocked;
+          setControlHidden(el, hideByNoBrain);
+          return;
+        }
         const lockAndHide = isInjectToggleAction
           ? noBrainOn
           : (isSaveOrDeleteAction && generationActive);
@@ -2290,6 +2436,12 @@ function applyNoBrainUiLock() {
       }
 
       const buttonAllowedInNoBrain = !!(id && allowButtonsInNoBrain.has(id));
+      if (generationActive) {
+        el.disabled = true;
+        const hideByNoBrain = noBrainOn && !buttonAllowedInNoBrain;
+        setControlHidden(el, hideByNoBrain);
+        return;
+      }
       if (noBrainOn && !buttonAllowedInNoBrain) {
         el.disabled = true;
         setControlHidden(el, true);
@@ -2303,6 +2455,21 @@ function applyNoBrainUiLock() {
         el.disabled = false;
         setControlHidden(el, false);
       }
+      return;
+    }
+    if (generationActive) {
+      if (isSummaryEditorTextarea) {
+        el.disabled = false;
+        setControlHidden(el, false);
+        return;
+      }
+      if (!id) {
+        el.disabled = true;
+        return;
+      }
+      const hideByNoBrain = noBrainOn && !allowIds.has(id);
+      el.disabled = true;
+      setControlHidden(el, hideByNoBrain);
       return;
     }
     if (!id) return;
@@ -2648,6 +2815,8 @@ function renderStatus() {
   if (!tavernGenerating && (autoModeInFlight || draftGenerationInFlight)) {
     autoModeInFlight = false;
     draftGenerationInFlight = false;
+    activeAutoModeRunId = 0;
+    activeDraftGenerationRunId = 0;
     setAutoModeUiLock(false);
     setAutoModeRangeDebugInfo("self-heal: Tavern idle, extension in-flight flags reset");
     scheduleAutoModeRun();
@@ -2676,6 +2845,7 @@ function renderStatus() {
   const useWorldbookInDraftEl = document.getElementById("stcs-use-worldbook-in-draft");
   const calcMaxContextEl = document.getElementById("stcs-calc-max-context");
   const calcTitleEl = document.getElementById("stcs-calc-title");
+  const calcHeaderEl = document.getElementById("stcs-calc-header");
   const calcSubmenuEl = document.getElementById("stcs-calc-submenu");
   const calcExpectedResponseEl = document.getElementById("stcs-calc-expected-response");
   const calcLorebookEl = document.getElementById("stcs-calc-lorebook");
@@ -2710,7 +2880,7 @@ function renderStatus() {
   );
   const firstGapLabel = firstGap ? `${firstGap.start}-${firstGap.end}` : "n/a";
   const autoModeEnabled = !!state.settings.autoModeEnabled;
-  const inProgress = autoModeInFlight || draftGenerationInFlight;
+  const inProgress = isExtensionGenerationActive();
   const targetTokens = getEffectiveRawBlockTargetTokens(state);
   const hasAnyGap = !!firstGap;
   const waitingForBatch = autoModeEnabled
@@ -2761,16 +2931,16 @@ function renderStatus() {
 
   const primaryStatus = [
     `Enabled: ${state.enabled ? "yes" : "no"}`,
-    `No Brain: ${state.settings.noBrainModeEnabled ? "yes" : "no"}`,
+    `One-click Auto: ${state.settings.noBrainModeEnabled ? "yes" : "no"}`,
     `Injection: ${state.injectionEnabled ? "yes" : "no"}`,
     `Auto mode enabled: ${autoModeEnabled ? "yes" : "no"}`,
     `Locked checkpoints: ${locked.length}`,
     `Summarized tokens (est): ${summarizedTokens}`,
-    `Last end index: ${lastLocked ? lastLocked.endIndex : "n/a"}`,
+    `Last summarized message: ${lastLocked ? lastLocked.endIndex : "n/a"}`,
     `First gap: ${firstGapLabel}`,
     `Unsummarized messages: ${unsummarizedCount}`,
     `Unsummarized tokens (est): ${unsummarizedTokensTotal}`,
-    `Auto range debug: ${autoModeRangeDebugInfo}`,
+    autoModeRangeDebugInfo,
   ].join(" | ");
   statusEl.style.whiteSpace = "pre-wrap";
   statusEl.textContent = `${primaryStatus}\nExtension status: ${extensionStatus}`;
@@ -2778,12 +2948,11 @@ function renderStatus() {
   renderLockedBlocksList();
 
   if (rangeInfoEl) {
-    const hasRange = Number.isInteger(state.draft.startIndex) && Number.isInteger(state.draft.endIndex);
-    if (!hasRange) {
+    const draftRange = getDraftRange(state.draft);
+    if (!draftRange) {
       rangeInfoEl.textContent = "No draft range selected.";
     } else {
-      const start = Number(state.draft.startIndex);
-      const end = Number(state.draft.endIndex);
+      const { start, end } = draftRange;
       const chatInRange = getChatMessages();
       const startHash = chatInRange[start] ? getMessageHash(chatInRange[start]) : "n/a";
       const endHash = chatInRange[end] ? getMessageHash(chatInRange[end]) : "n/a";
@@ -2816,8 +2985,11 @@ function renderStatus() {
     calcResultExternalEl.style.display = state.settings.noBrainModeEnabled ? "" : "none";
   }
   if (calcTitleEl instanceof HTMLElement) {
-    calcTitleEl.textContent = state.settings.noBrainModeEnabled ? "Context Budget" : "Context Budget Calculator";
+    calcTitleEl.textContent = state.settings.noBrainModeEnabled ? "Context Budget" : "";
     calcTitleEl.style.display = state.settings.noBrainModeEnabled ? "" : "none";
+  }
+  if (calcHeaderEl instanceof HTMLElement) {
+    calcHeaderEl.style.display = state.settings.noBrainModeEnabled ? "none" : "";
   }
   if (calcSubmenuEl instanceof HTMLElement) {
     calcSubmenuEl.style.display = state.settings.noBrainModeEnabled ? "none" : "";
@@ -2838,6 +3010,7 @@ function renderStatus() {
     previewEl.textContent = previewText;
   }
 
+  applyLocalizedTooltips();
   applyNoBrainUiLock();
   updateExtensionPrompt();
 }
@@ -2905,12 +3078,12 @@ function bindUiEvents() {
 
     if (state.settings.noBrainModeEnabled) {
       void runNoBrainMaintenanceCycle({ silent: true });
-      toastr.success("No Brain mode enabled: preset applied and limits refreshed.", MODULE_NAME);
+      toastr.success("One-click Auto mode enabled: preset applied and limits refreshed.", MODULE_NAME);
       if (state.settings.autoModeEnabled) {
         scheduleAutoModeRun();
       }
     } else {
-      toastr.info("No Brain mode disabled.", MODULE_NAME);
+      toastr.info("One-click Auto mode disabled.", MODULE_NAME);
     }
   });
 
@@ -3144,6 +3317,7 @@ async function renderUI() {
   } catch (error) {
     console.warn(`[${MODULE_NAME}] Failed to initialize connection profile dropdown`, error);
   }
+  applyLocalizedTooltips();
   renderStatus();
   const state = getState();
   if (state.settings.noBrainModeEnabled) {

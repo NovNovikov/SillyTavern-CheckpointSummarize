@@ -1,6 +1,6 @@
 <div id="st_checkpoint_summarize_settings">
   <div class="inline-drawer">
-    <div class="inline-drawer-toggle inline-drawer-header">
+    <div id="stcs-root-drawer-header" class="inline-drawer-toggle inline-drawer-header" title="Open or collapse CheckpointSummarize settings">
       <b>CheckpointSummarize</b>
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
@@ -15,58 +15,67 @@
         <div class="stcs-settings-head">
           <h4>Settings</h4>
           <label class="checkbox_label stcs-no-brain-toggle">
-            <input id="stcs-no-brain-mode" type="checkbox" />
-            <span>No Brain mode</span>
+            <input id="stcs-no-brain-mode" type="checkbox" title="One-click preset mode: applies recommended automation settings" />
+            <span>One-click Auto mode</span>
           </label>
         </div>
         <label class="checkbox_label">
-          <input id="stcs-enabled" type="checkbox" />
+          <input id="stcs-enabled" type="checkbox" title="Enable or disable this extension for the current chat" />
           <span>Enable extension</span>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-injection-enabled" type="checkbox" />
+          <input id="stcs-injection-enabled" type="checkbox" title="Inject locked checkpoint memory into the main chat prompt" />
           <span>Enable prompt injection</span>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-use-profile-prompt-stack" type="checkbox" />
+          <input id="stcs-use-profile-prompt-stack" type="checkbox" title="Use full connection profile prompt stack during draft generation" />
           <span>Use connection profile prompt stack for draft generation</span>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-use-worldbook-in-draft" type="checkbox" />
+          <input id="stcs-use-worldbook-in-draft" type="checkbox" title="Include World Info in draft-generation context" />
           <span>Use Worldbook in draft generation</span>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-include-prev-summaries" type="checkbox" />
+          <input id="stcs-include-prev-summaries" type="checkbox" title="Pass all previous locked summaries as read-only context for new drafts" />
           <span>Include all previous locked summaries in draft generation</span>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-auto-mode-enabled" type="checkbox" />
+          <input id="stcs-auto-mode-enabled" type="checkbox" title="Automatically generate summaries when unsummarized content reaches block target" />
           <span>Auto mode: generate draft when unsummarized tail reaches target block tokens</span>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-auto-approve-enabled" type="checkbox" />
+          <input id="stcs-auto-approve-enabled" type="checkbox" title="Automatically lock generated drafts as checkpoints in auto mode" />
           <span>Auto approve: auto-lock generated draft in auto mode</span>
+        </label>
+        <label id="stcs-summary-compression-inline-row" class="stcs-connection-profile-row">
+          Context Compression value
+          <select id="stcs-summary-compression-preset-inline" class="text_pole" title="Summary compression ratio used for automatic summary block sizing">
+            <option value="huge">Huge compression (1/70)</option>
+            <option value="normal">Normal compression (1/50)</option>
+            <option value="light">Light compression (1/35)</option>
+            <option value="endless">Endless VRAM (1/20)</option>
+          </select>
         </label>
         <label class="stcs-connection-profile-row">
           Connection Profile
-          <select id="stcs-connection-profile" class="text_pole"></select>
+          <select id="stcs-connection-profile" class="text_pole" title="Connection profile used for checkpoint draft generation"></select>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-target-raw-block-tokens" class="text_pole widthUnset inline_setting" type="number" min="1000" step="100" />
+          <input id="stcs-target-raw-block-tokens" class="text_pole widthUnset inline_setting" type="number" min="1000" step="100" title="Target token size of one raw message block to summarize" />
           <span>Target raw block tokens</span>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-target-summary-tokens" class="text_pole widthUnset inline_setting" type="number" min="64" step="16" />
+          <input id="stcs-target-summary-tokens" class="text_pole widthUnset inline_setting" type="number" min="64" step="16" title="Target token size of the generated checkpoint summary" />
           <span>Target summary tokens</span>
         </label>
         <label class="checkbox_label">
-          <input id="stcs-safety-margin-tokens" class="text_pole widthUnset inline_setting" type="number" min="0" step="100" />
+          <input id="stcs-safety-margin-tokens" class="text_pole widthUnset inline_setting" type="number" min="0" step="100" title="Reserved token buffer to avoid context overflow" />
           <span>Safety margin tokens</span>
         </label>
         <div class="stcs-row stcs-injection-row">
           <label>
             Injection position
-            <select id="stcs-injection-position" class="text_pole">
+            <select id="stcs-injection-position" class="text_pole" title="Where checkpoint memory is injected into the prompt">
               <option value="-1">Do not inject</option>
               <option value="2">Before main prompt</option>
               <option value="0">After main prompt</option>
@@ -76,11 +85,11 @@
           </label>
           <label>
             Injection depth
-            <input id="stcs-injection-depth" class="text_pole widthUnset inline_setting" type="number" min="0" max="99" step="1" />
+            <input id="stcs-injection-depth" class="text_pole widthUnset inline_setting" type="number" min="0" max="99" step="1" title="Chat depth used when injection position is set to in-chat mode" />
           </label>
           <label>
             Injection role
-            <select id="stcs-injection-role" class="text_pole">
+            <select id="stcs-injection-role" class="text_pole" title="Role used for injected checkpoint memory messages">
               <option value="0">System</option>
               <option value="1">User</option>
               <option value="2">Assistant</option>
@@ -88,74 +97,87 @@
           </label>
         </div>
         <label class="checkbox_label">
-          <input id="stcs-injection-scan" type="checkbox" />
+          <input id="stcs-injection-scan" type="checkbox" title="Allow injected memory text to participate in World Info scanning" />
           <span>Include in World Info scanning</span>
         </label>
         <div class="stcs-section stcs-calc">
-          <h4>Context Budget Calculator</h4>
+          <h4 id="stcs-calc-header">Context Budget</h4>
+          <div id="stcs-calc-title"></div>
+          <div id="stcs-calc-result-external"></div>
+          <div id="stcs-calc-submenu">
+            <label class="stcs-connection-profile-row">
+              Context Compression value
+              <select id="stcs-summary-compression-preset-submenu" class="text_pole" title="Summary compression ratio used for automatic summary block sizing">
+                <option value="huge">Huge compression (1/70)</option>
+                <option value="normal">Normal compression (1/50)</option>
+                <option value="light">Light compression (1/35)</option>
+                <option value="endless">Endless VRAM (1/20)</option>
+              </select>
+            </label>
           <label class="checkbox_label">
-            <input id="stcs-calc-max-context" class="text_pole widthUnset inline_setting" type="number" min="1" step="1" />
+            <input id="stcs-calc-max-context" class="text_pole widthUnset inline_setting" type="number" min="1" step="1" title="Backend maximum context window size" />
             <span>Max context tokens</span>
           </label>
           <label class="checkbox_label">
-            <input id="stcs-calc-expected-response" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" />
+            <input id="stcs-calc-expected-response" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Expected response token budget reserved outside summary generation" />
             <span>Expected response tokens</span>
           </label>
           <label class="checkbox_label">
-            <input id="stcs-calc-lorebook" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" />
+            <input id="stcs-calc-lorebook" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated Lorebook/World Info token cost" />
             <span>Lorebook tokens</span>
           </label>
           <label class="checkbox_label">
-            <input id="stcs-calc-system" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" />
+            <input id="stcs-calc-system" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated system instruction token cost" />
             <span>System instruction tokens</span>
           </label>
           <label class="checkbox_label">
-            <input id="stcs-calc-character" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" />
+            <input id="stcs-calc-character" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated character card token cost" />
             <span>Character card tokens</span>
           </label>
           <div class="stcs-row stcs-actions-row">
-            <button id="stcs-calc-apply" class="menu_button">Calculate Limits</button>
-            <button id="stcs-calc-autofill-itemization" class="menu_button">Auto fill from chat</button>
+            <button id="stcs-calc-apply" class="menu_button" title="Recalculate raw block and summary limits from calculator fields">Calculate Limits</button>
+            <button id="stcs-calc-autofill-itemization" class="menu_button" title="Fill calculator fields from latest chat prompt itemization">Auto fill from chat</button>
           </div>
           <div id="stcs-calc-result"></div>
+          </div>
         </div>
       </div>
 
-      <div class="stcs-section">
+      <div id="stcs-draft-section" class="stcs-section">
         <h4>Generate Checkpoint Draft</h4>
         <div class="stcs-row">
           <label>
             Start index
-            <input id="stcs-start-index" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" />
+            <input id="stcs-start-index" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Start message index of the raw block to summarize" />
           </label>
           <label>
             End index
-            <input id="stcs-end-index" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" />
+            <input id="stcs-end-index" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="End message index of the raw block to summarize" />
           </label>
         </div>
         <div class="stcs-row stcs-actions-row">
-          <button id="stcs-auto-select-next-block" class="menu_button">Auto next<br>block</button>
-          <button id="stcs-calc-limits-from-range" class="menu_button">Set limits<br>from range</button>
-          <button id="stcs-generate-draft" class="menu_button">Generate<br>draft</button>
-          <button id="stcs-lock-checkpoint" class="menu_button">Lock<br>Checkpoint</button>
-          <button id="stcs-clear-draft" class="menu_button">Clear<br>Draft</button>
+          <button id="stcs-auto-select-next-block" class="menu_button" title="Automatically select the next unsummarized message range">Auto next<br>block</button>
+          <button id="stcs-calc-limits-from-range" class="menu_button" title="Set block/summary limits based on currently selected range size">Set limits<br>from range</button>
+          <button id="stcs-generate-draft" class="menu_button" title="Generate a draft summary for the selected raw block">Generate<br>draft</button>
+          <button id="stcs-lock-checkpoint" class="menu_button" title="Lock current draft as an immutable checkpoint">Lock<br>Checkpoint</button>
+          <button id="stcs-clear-draft" class="menu_button" title="Clear current draft text and keep working range">Clear<br>Draft</button>
         </div>
-        <textarea id="stcs-draft-summary" class="text_pole" rows="10" placeholder="Draft checkpoint summary..."></textarea>
+        <textarea id="stcs-draft-summary" class="text_pole" rows="10" placeholder="Draft checkpoint summary..." title="Editable draft summary text before locking checkpoint"></textarea>
         <div id="stcs-range-info"></div>
       </div>
 
       <div class="stcs-section">
         <div class="inline-drawer">
-          <div class="inline-drawer-toggle inline-drawer-header">
+          <div id="stcs-current-summary-drawer-header" class="inline-drawer-toggle inline-drawer-header" title="Open or collapse current checkpoint list and memory preview">
             <b>Current Summary</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
           </div>
           <div class="inline-drawer-content">
             <div class="stcs-row stcs-actions-row">
-              <button id="stcs-export-checkpoints" class="menu_button">Export checkpoints</button>
-              <button id="stcs-export-current-summary" class="menu_button">Export current summary</button>
-              <button id="stcs-import-checkpoints" class="menu_button">Import checkpoints</button>
-              <button id="stcs-import-current-summary" class="menu_button">Import current summary</button>
+              <button id="stcs-export-checkpoints" class="menu_button" title="Export all checkpoints to a file">Export checkpoints</button>
+              <button id="stcs-export-current-summary" class="menu_button" title="Export current injected memory text to a file">Export current summary</button>
+              <button id="stcs-import-checkpoints" class="menu_button" title="Import checkpoints from an exported file">Import checkpoints</button>
+              <button id="stcs-import-current-summary" class="menu_button" title="Import current memory text from an exported file">Import current summary</button>
             </div>
             <div id="stcs-locked-list">No checkpoints yet.</div>
             <label>
@@ -168,18 +190,18 @@
 
       <div class="stcs-section">
         <div class="inline-drawer">
-          <div class="inline-drawer-toggle inline-drawer-header">
+          <div id="stcs-summary-prompts-drawer-header" class="inline-drawer-toggle inline-drawer-header" title="Open or collapse prompt templates used by summary generation and injection">
             <b>Summary prompts</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
           </div>
           <div class="inline-drawer-content">
             <label>
               Summary prompt template
-              <textarea id="stcs-summary-template" class="text_pole stcs-template-editor" rows="8"></textarea>
+              <textarea id="stcs-summary-template" class="text_pole stcs-template-editor" rows="8" title="Template used to ask the model for a new checkpoint summary"></textarea>
             </label>
             <label>
               Injection template
-              <textarea id="stcs-injection-template" class="text_pole stcs-template-editor" rows="8"></textarea>
+              <textarea id="stcs-injection-template" class="text_pole stcs-template-editor" rows="8" title="Template used to inject locked checkpoints into the main prompt"></textarea>
             </label>
           </div>
         </div>

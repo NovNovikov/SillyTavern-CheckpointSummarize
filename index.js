@@ -2427,7 +2427,7 @@ function applyNoBrainUiLock() {
     if (el instanceof HTMLButtonElement) {
       const isCheckpointActionButton = !!el.closest("#stcs-locked-list");
       if (isCheckpointActionButton) {
-        const isEditAction = el.classList.contains("stcs-action-edit");
+        const isEditAction = el.classList.contains("stcs-action-view");
         const isInjectToggleAction = el.classList.contains("stcs-action-toggle-inject");
         const isSaveOrDeleteAction = !!(
           el.classList.contains("stcs-action-save")

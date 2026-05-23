@@ -532,11 +532,28 @@ async function runAutoMode() {
       const chatNow = getChatMessages();
       const existingRange = getDraftRange(state.draft);
       const firstGapNow = getFirstGapInfo(chatNow.length);
+      const targetNow = getEffectiveRawBlockTargetTokens(state);
+      const firstGapTokensNow = firstGapNow
+        ? calculateMessageRangeTokens(Number(firstGapNow.start), Number(firstGapNow.end))
+        : 0;
+      const firstGapBelowTargetNow = !!firstGapNow
+        && !firstGapNow.hasCoveredContentAfter
+        && firstGapTokensNow < targetNow;
+      const existingOutsideCurrentGap = firstGapNow
+        ? !isDraftRangeInsideGap(state.draft, Number(firstGapNow.start), Number(firstGapNow.end))
+        : false;
       const existingLooksPlaceholder = firstGapNow
         ? isZeroZeroPlaceholder(existingRange, Number(firstGapNow.start), Number(firstGapNow.end))
         : false;
       const existingIsZeroZero = isZeroZeroRange(existingRange);
-      if (!existingRange || existingRange.end >= chatNow.length || existingLooksPlaceholder || existingIsZeroZero) {
+      if (
+        !existingRange
+        || existingRange.end >= chatNow.length
+        || existingLooksPlaceholder
+        || existingIsZeroZero
+        || existingOutsideCurrentGap
+        || firstGapBelowTargetNow
+      ) {
         state.draft.startIndex = null;
         state.draft.endIndex = null;
         state.draft.sourceTokenCount = 0;
@@ -545,7 +562,7 @@ async function runAutoMode() {
         state.draft.generatedAt = null;
         saveState();
         renderStatus();
-        setAutoModeRangeDebugInfo("stale draft cleared (invalid/placeholder/0-0 range)");
+        setAutoModeRangeDebugInfo("stale draft cleared (invalid/placeholder/0-0/outside gap/below target)");
         scheduleAutoModeRun();
         return;
       }

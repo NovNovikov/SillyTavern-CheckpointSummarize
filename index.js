@@ -567,7 +567,7 @@ async function runAutoMode() {
     if (firstGapNow) {
       const preRange = getDraftRange(state.draft);
       if (!preRange || isZeroZeroRange(preRange)) {
-        autoSelectNextRange();
+        autoSelectNextRangeForAutoMode("run-preselect");
         const postRange = getDraftRange(getState().draft);
         setAutoModeRangeDebugInfo(
           `preselect gap ${Number(firstGapNow.start)}-${Number(firstGapNow.end)} | before: ${preRange ? `${preRange.start}-${preRange.end}` : "empty"} | after: ${postRange ? `${postRange.start}-${postRange.end}` : "empty"}`,
@@ -651,7 +651,7 @@ async function runAutoMode() {
     targetTokens,
   });
   if (!isMiddleGap && unsummarizedTokens < targetTokens) {
-    setAutoModeRangeDebugInfo(`gap ${startIndex}-${gapEnd} below target (${unsummarizedTokens}<${targetTokens})`);
+    autoSelectNextRangeForAutoMode("run-first-gap-below-target");
     traceAutoMode("run:first-gap-below-target", {
       autoRunId,
       startIndex,
@@ -697,6 +697,7 @@ async function runAutoMode() {
         loopTargetTokens,
       });
       if (!loopIsMiddleGap && loopUnsummarizedTokens < loopTargetTokens) {
+        autoSelectNextRangeForAutoMode("run-loop-gap-below-target");
         traceAutoMode("run:loop-gap-below-target", {
           autoRunId,
           safetyCycles,
@@ -719,7 +720,7 @@ async function runAutoMode() {
         || isZeroZeroRange(rangeBeforeSelect)
         || isZeroZeroPlaceholder(rangeBeforeSelect, loopStartIndex, loopGapEnd);
       if (needAutoSelectBefore) {
-        autoSelectNextRange();
+        autoSelectNextRangeForAutoMode("run-loop-select");
       }
       const selectedRangeState = getState();
       const rangeAfterSelect = getDraftRange(selectedRangeState.draft);
@@ -2129,15 +2130,21 @@ function getMaxPromptTokensSafe() {
   return 16000;
 }
 
+function clearDraftRangeSelection(state = null) {
+  const s = state ?? getState();
+  s.draft.startIndex = null;
+  s.draft.endIndex = null;
+  s.draft.sourceTokenCount = 0;
+  s.draft.previousSummariesTokenCount = 0;
+  s.draft.generatedAt = null;
+}
+
 function autoSelectNextRange() {
   const state = getState();
   const chat = getChatMessages();
 
   if (!chat.length) {
-    state.draft.startIndex = null;
-    state.draft.endIndex = null;
-    state.draft.sourceTokenCount = 0;
-    state.draft.previousSummariesTokenCount = 0;
+    clearDraftRangeSelection(state);
     saveState();
     renderStatus();
     return;
@@ -2145,10 +2152,7 @@ function autoSelectNextRange() {
 
   const firstGap = getFirstGapInfo(chat.length);
   if (!firstGap) {
-    state.draft.startIndex = null;
-    state.draft.endIndex = null;
-    state.draft.sourceTokenCount = 0;
-    state.draft.previousSummariesTokenCount = 0;
+    clearDraftRangeSelection(state);
     saveState();
     renderStatus();
     return;
@@ -2204,6 +2208,58 @@ function autoSelectNextRange() {
   });
   saveState();
   renderStatus();
+}
+
+function autoSelectNextRangeForAutoMode(reason = "") {
+  const state = getState();
+  const chat = getChatMessages();
+  const firstGap = getFirstGapInfo(chat.length);
+
+  if (!chat.length || !firstGap) {
+    if (!hasVisibleText(state.draft?.summary ?? "")) {
+      clearDraftRangeSelection(state);
+      saveState();
+      renderStatus();
+    }
+    traceAutoMode("auto-select:skipped-no-gap", { reason });
+    return false;
+  }
+
+  const startIndex = Number(firstGap.start);
+  const gapEnd = Number(firstGap.end);
+  const isMiddleGap = !!firstGap.hasCoveredContentAfter;
+  const gapTokens = calculateMessageRangeTokens(startIndex, gapEnd);
+  const targetTokens = getEffectiveRawBlockTargetTokens(state);
+
+  if (!isMiddleGap && gapTokens < targetTokens) {
+    const draftRange = getDraftRange(state.draft);
+    const shouldClearDraftRange = !hasVisibleText(state.draft?.summary ?? "")
+      && (!draftRange || isDraftRangeInsideGap(state.draft, startIndex, gapEnd));
+    if (shouldClearDraftRange) {
+      clearDraftRangeSelection(state);
+      saveState();
+      renderStatus();
+    }
+    setAutoModeRangeDebugInfo(`gap ${startIndex}-${gapEnd} below target (${gapTokens}<${targetTokens})`);
+    traceAutoMode("auto-select:tail-below-target", {
+      reason,
+      startIndex,
+      gapEnd,
+      gapTokens,
+      targetTokens,
+      clearedDraftRange: shouldClearDraftRange,
+    });
+    return false;
+  }
+
+  autoSelectNextRange();
+  traceAutoMode("auto-select:selected-eligible-gap", {
+    reason,
+    firstGap,
+    gapTokens,
+    targetTokens,
+  });
+  return true;
 }
 
 async function generateDraftCheckpoint(options = {}) {
@@ -2531,7 +2587,7 @@ async function runNoBrainMaintenanceCycle(options = {}) {
     }
     traceAutoMode("easy-maintenance:after-cap", { options });
   }
-  autoSelectNextRange();
+  autoSelectNextRangeForAutoMode("easy-maintenance");
   traceAutoMode("easy-maintenance:after-autoselect", { options });
 }
 

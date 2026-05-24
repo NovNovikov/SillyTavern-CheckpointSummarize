@@ -192,6 +192,10 @@ function ensureState() {
   state.runtime.blocksRevision ??= 0;
   state.blocks ??= [];
 
+  if (applyNoBrainPresetIfEnabled(state)) {
+    saveState();
+  }
+
   return state;
 }
 
@@ -2583,6 +2587,26 @@ function applyNoBrainPreset(state) {
   state.settings.autoApproveEnabled = true;
 }
 
+function getNoBrainPresetSignature(state) {
+  return JSON.stringify({
+    enabled: !!state?.enabled,
+    injectionEnabled: !!state?.injectionEnabled,
+    injectionPosition: Number(state?.settings?.injectionPosition),
+    useProfilePromptStack: !!state?.settings?.useProfilePromptStack,
+    useWorldbookInDraft: !!state?.settings?.useWorldbookInDraft,
+    includeAllPreviousSummaries: !!state?.settings?.includeAllPreviousSummaries,
+    autoModeEnabled: !!state?.settings?.autoModeEnabled,
+    autoApproveEnabled: !!state?.settings?.autoApproveEnabled,
+  });
+}
+
+function applyNoBrainPresetIfEnabled(state) {
+  if (!state?.settings?.noBrainModeEnabled) return false;
+  const before = getNoBrainPresetSignature(state);
+  applyNoBrainPreset(state);
+  return getNoBrainPresetSignature(state) !== before;
+}
+
 async function runNoBrainMaintenanceCycle(options = {}) {
   const { silent = false } = options;
   const state = getState();
@@ -3589,8 +3613,7 @@ async function renderUI() {
 
 jQuery(async () => {
   const state = ensureState();
-  if (state.settings.noBrainModeEnabled) {
-    applyNoBrainPreset(state);
+  if (applyNoBrainPresetIfEnabled(state)) {
     saveState();
   }
   await renderUI();

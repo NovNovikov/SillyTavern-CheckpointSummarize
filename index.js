@@ -373,6 +373,74 @@ function setAutoModeRangeDebugInfo(text) {
   autoModeRangeDebugInfo = String(text ?? "").trim() || "n/a";
 }
 
+function buildStatusText({
+  state,
+  lockedCount,
+  summarizedTokens,
+  lastLocked,
+  firstGap,
+  firstGapLabel,
+  firstGapTokens,
+  unsummarizedCount,
+  unsummarizedTokensTotal,
+  targetTokens,
+  autoModeEnabled,
+  waitingForBatch,
+  extensionStatus,
+}) {
+  const isEasyMode = !!state.settings?.noBrainModeEnabled;
+  const statusLabel = extensionStatus === "Idle" ? "idle" : extensionStatus;
+
+  if (isEasyMode) {
+    const setupWarnings = [];
+    if (!state.enabled) setupWarnings.push("extension off");
+    if (!state.injectionEnabled) setupWarnings.push("injection off");
+    if (!autoModeEnabled) setupWarnings.push("auto mode off");
+    if (!state.settings?.autoApproveEnabled) setupWarnings.push("auto approve off");
+
+    const nextBatch = firstGap ? `${firstGapTokens} / ${targetTokens} tokens` : "complete";
+    const parts = [
+      "Easy mode: on",
+      `Checkpoints: ${lockedCount}`,
+      `Summarized: ${summarizedTokens} tokens`,
+      `Next batch: ${nextBatch}`,
+      `Status: ${statusLabel}`,
+    ];
+    if (setupWarnings.length) {
+      parts.push(`Setup warning: ${setupWarnings.join(", ")}`);
+    }
+    return parts.join(" | ");
+  }
+
+  if (autoModeEnabled) {
+    const autoStatus = waitingForBatch
+      ? `waiting (${firstGapTokens} / ${targetTokens} tokens)`
+      : statusLabel;
+    return [
+      `Enabled: ${state.enabled ? "yes" : "no"}`,
+      `Injection: ${state.injectionEnabled ? "yes" : "no"}`,
+      "Auto mode: on",
+      `Locked checkpoints: ${lockedCount}`,
+      `First gap: ${firstGapLabel}`,
+      `Unsummarized tokens: ${unsummarizedTokensTotal}`,
+      `Status: ${autoStatus}`,
+    ].join(" | ");
+  }
+
+  return [
+    `Enabled: ${state.enabled ? "yes" : "no"}`,
+    `Injection: ${state.injectionEnabled ? "yes" : "no"}`,
+    `Locked checkpoints: ${lockedCount}`,
+    `Summarized tokens (est): ${summarizedTokens}`,
+    `Last summarized message: ${lastLocked ? lastLocked.endIndex : "n/a"}`,
+    `First gap: ${firstGapLabel}`,
+    `Unsummarized messages: ${unsummarizedCount}`,
+    `Unsummarized tokens (est): ${unsummarizedTokensTotal}`,
+    statusLabel !== "idle" ? `Status: ${statusLabel}` : null,
+    waitingForBatch ? `Next batch: ${firstGapTokens} / ${targetTokens} tokens` : null,
+  ].filter(Boolean).join(" | ");
+}
+
 function resetTransientRuntimeForChatChange() {
   const hadHydrationTimer = !!hydrationTimer;
   const hadAutoModeTimer = !!autoModeTimer;
@@ -3213,6 +3281,7 @@ function renderStatus() {
     0,
   );
   const firstGapLabel = firstGap ? `${firstGap.start}-${firstGap.end}` : "n/a";
+  const firstGapTokens = firstGap ? calculateMessageRangeTokens(Number(firstGap.start), Number(firstGap.end)) : 0;
   const autoModeEnabled = !!state.settings.autoModeEnabled;
   const inProgress = isExtensionGenerationActive();
   const targetTokens = getEffectiveRawBlockTargetTokens(state);
@@ -3220,13 +3289,13 @@ function renderStatus() {
   const waitingForBatch = autoModeEnabled
     && !!firstGap
     && !firstGap.hasCoveredContentAfter
-    && unsummarizedTokensTotal < targetTokens;
+    && firstGapTokens < targetTokens;
   const noBrainWaiting = !!state.settings.noBrainModeEnabled && autoModeEnabled && hasAnyGap && !inProgress;
   const extensionStatus = inProgress
-    ? "summary generation in progress"
+    ? (draftGenerationInFlight ? "generating summary" : "updating checkpoints")
     : (lastExtensionStatusError
-      ? `error (${lastExtensionStatusError})`
-      : ((waitingForBatch || noBrainWaiting) ? "waiting for unsummarized tokens to reach the batch limit" : "Idle"));
+      ? `error: ${lastExtensionStatusError}`
+      : ((waitingForBatch || noBrainWaiting) ? "waiting" : "idle"));
 
   enabledEl.checked = !!state.enabled;
   if (noBrainModeEl) noBrainModeEl.checked = !!state.settings.noBrainModeEnabled;
@@ -3263,21 +3332,22 @@ function renderStatus() {
     draftSummaryEl.value = state.draft.summary ?? "";
   }
 
-  const primaryStatus = [
-    `Enabled: ${state.enabled ? "yes" : "no"}`,
-    `Easy mode: ${state.settings.noBrainModeEnabled ? "yes" : "no"}`,
-    `Injection: ${state.injectionEnabled ? "yes" : "no"}`,
-    `Auto mode enabled: ${autoModeEnabled ? "yes" : "no"}`,
-    `Locked checkpoints: ${locked.length}`,
-    `Summarized tokens (est): ${summarizedTokens}`,
-    `Last summarized message: ${lastLocked ? lastLocked.endIndex : "n/a"}`,
-    `First gap: ${firstGapLabel}`,
-    `Unsummarized messages: ${unsummarizedCount}`,
-    `Unsummarized tokens (est): ${unsummarizedTokensTotal}`,
-    autoModeRangeDebugInfo,
-  ].join(" | ");
   statusEl.style.whiteSpace = "pre-wrap";
-  statusEl.textContent = `${primaryStatus}\nExtension status: ${extensionStatus}`;
+  statusEl.textContent = buildStatusText({
+    state,
+    lockedCount: locked.length,
+    summarizedTokens,
+    lastLocked,
+    firstGap,
+    firstGapLabel,
+    firstGapTokens,
+    unsummarizedCount,
+    unsummarizedTokensTotal,
+    targetTokens,
+    autoModeEnabled,
+    waitingForBatch,
+    extensionStatus,
+  });
 
   renderLockedBlocksList();
 

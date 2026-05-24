@@ -364,6 +364,44 @@ function setAutoModeRangeDebugInfo(text) {
   autoModeRangeDebugInfo = String(text ?? "").trim() || "n/a";
 }
 
+function resetTransientRuntimeForChatChange() {
+  const hadHydrationTimer = !!hydrationTimer;
+  const hadAutoModeTimer = !!autoModeTimer;
+  const hadAutoModeInFlight = !!autoModeInFlight || activeAutoModeRunId !== 0;
+  const hadDraftGenerationInFlight = !!draftGenerationInFlight || activeDraftGenerationRunId !== 0;
+  const hadUiLock = !!autoModeUiLocked;
+  if (hydrationTimer) {
+    clearTimeout(hydrationTimer);
+    hydrationTimer = null;
+  }
+  if (autoModeTimer) {
+    clearTimeout(autoModeTimer);
+    autoModeTimer = null;
+  }
+
+  autoModeInFlight = false;
+  draftGenerationInFlight = false;
+  activeAutoModeRunId = 0;
+  activeDraftGenerationRunId = 0;
+  autoModeLastAttemptKey = "";
+  lastWorldInfoResolutionReason = "not attempted yet";
+  clearExtensionStatusError();
+  setAutoModeRangeDebugInfo("n/a");
+  draftTextareaWriteSeq += 1;
+
+  if (hadUiLock) {
+    setAutoModeUiLock(false);
+  }
+
+  traceAutoMode("chat-change:transient-reset", {
+    hadHydrationTimer,
+    hadAutoModeTimer,
+    hadAutoModeInFlight,
+    hadDraftGenerationInFlight,
+    hadUiLock,
+  });
+}
+
 function traceAutoMode(point, extra = {}) {
   try {
     const state = getState();
@@ -3624,12 +3662,13 @@ jQuery(async () => {
     scheduleHydrationRefresh();
     scheduleAutoModeRun();
   };
-  const refreshEvents = [
-    event_types?.CHAT_CHANGED,
-    event_types?.CHARACTER_MESSAGE_RENDERED,
-  ].filter(Boolean);
-
-  for (const eventName of refreshEvents) {
-    eventSource?.on?.(eventName, refresh);
+  if (event_types?.CHAT_CHANGED) {
+    eventSource?.on?.(event_types.CHAT_CHANGED, () => {
+      resetTransientRuntimeForChatChange();
+      refresh();
+    });
+  }
+  if (event_types?.CHARACTER_MESSAGE_RENDERED) {
+    eventSource?.on?.(event_types.CHARACTER_MESSAGE_RENDERED, refresh);
   }
 });

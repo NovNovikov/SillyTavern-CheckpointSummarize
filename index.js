@@ -753,7 +753,7 @@ async function runAutoMode() {
         needAutoSelectBefore,
         revisionBeforeGeneration,
       });
-      await generateDraftCheckpoint({ skipPostNoBrainMaintenance: true });
+      const draftGenerated = await generateDraftCheckpoint({ skipPostNoBrainMaintenance: true });
       if (!isCurrentAutoRun()) break;
 
       const nextState = getState();
@@ -764,7 +764,18 @@ async function runAutoMode() {
         revisionBeforeGeneration,
         revisionAfterGeneration,
         draftHasSummary: hasVisibleText(nextState.draft?.summary ?? ""),
+        draftGenerated: !!draftGenerated,
       });
+      if (!draftGenerated) {
+        setExtensionStatusError("draft generation produced no summary");
+        traceAutoMode("run:draft-generation-empty", {
+          autoRunId,
+          safetyCycles,
+          revisionBeforeGeneration,
+          revisionAfterGeneration,
+        });
+        break;
+      }
       if (revisionAfterGeneration !== revisionBeforeGeneration) {
         // Memory changed while generation was running (manual edits/toggles/deletes).
         // Drop stale draft and regenerate against fresh memory state.
@@ -790,8 +801,10 @@ async function runAutoMode() {
         if (nextState.settings.noBrainModeEnabled) {
           await runNoBrainMaintenanceCycle({ silent: true });
         }
+      } else if (hasVisibleText(nextState.draft.summary ?? "")) {
+        break;
       } else {
-        shouldRetrySoon = true;
+        setExtensionStatusError("draft generation produced no summary");
         break;
       }
 
@@ -2266,7 +2279,7 @@ async function generateDraftCheckpoint(options = {}) {
   const { skipPostNoBrainMaintenance = false } = options;
   if (draftGenerationInFlight || activeDraftGenerationRunId !== 0) {
     toastr.warning("Draft generation is already in progress.", MODULE_NAME);
-    return;
+    return false;
   }
   const state = getState();
   const draftRange = getDraftRange(state.draft);
@@ -2275,7 +2288,7 @@ async function generateDraftCheckpoint(options = {}) {
 
   if (!draftRange) {
     toastr.warning("Please select a valid message range first.", MODULE_NAME);
-    return;
+    return false;
   }
   const { start, end } = draftRange;
   traceAutoMode("generate:start", {
@@ -2294,13 +2307,13 @@ async function generateDraftCheckpoint(options = {}) {
     saveState();
     renderStatus();
     toastr.warning("Range 0-0 is blocked. Use Autoselect next block to pick a valid range.", MODULE_NAME);
-    return;
+    return false;
   }
 
   const rawBlock = buildRawBlockText(start, end);
   if (!rawBlock.trim()) {
     toastr.warning("Selected range has no content to summarize.", MODULE_NAME);
-    return;
+    return false;
   }
 
   const prompt = buildSummaryPrompt();
@@ -2318,7 +2331,7 @@ async function generateDraftCheckpoint(options = {}) {
       `Estimated prompt too large (${promptTokens} > ${promptBudget}). Reduce range or token targets.`,
       MODULE_NAME,
     );
-    return;
+    return false;
   }
 
   try {
@@ -2356,12 +2369,12 @@ async function generateDraftCheckpoint(options = {}) {
         return String(rawSummary ?? "").trim();
       }
     });
-    if (!isCurrentDraftRun()) return;
+    if (!isCurrentDraftRun()) return false;
 
     const normalizedSummary = normalizeSummaryOutput(summary);
     if (!hasVisibleText(normalizedSummary)) {
       toastr.warning("Model returned an empty draft summary.", MODULE_NAME);
-      return;
+      return false;
     }
 
     state.draft.summary = normalizedSummary;
@@ -2380,9 +2393,10 @@ async function generateDraftCheckpoint(options = {}) {
     }
     clearExtensionStatusError();
     toastr.success("Draft checkpoint generated.", MODULE_NAME);
+    return true;
   } catch (error) {
     console.error(`[${MODULE_NAME}] Draft generation failed`, error);
-    if (!isCurrentDraftRun()) return;
+    if (!isCurrentDraftRun()) return false;
     const message = String(error?.message ?? error ?? "Unknown error");
     setExtensionStatusError(message);
     if (/mandatory prompts exceed the context size/i.test(message)) {
@@ -2390,9 +2404,10 @@ async function generateDraftCheckpoint(options = {}) {
         "Mandatory prompts exceed context. Reduce WI/system/character load or lower raw block target. Re-run Autofill + Calculate Limits.",
         MODULE_NAME,
       );
-      return;
+      return false;
     }
     toastr.error(`Failed to generate checkpoint draft: ${message}`, MODULE_NAME);
+    return false;
   } finally {
     if (isCurrentDraftRun()) {
       if (generateBtn) generateBtn.disabled = false;

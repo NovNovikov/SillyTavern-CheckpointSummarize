@@ -590,6 +590,7 @@ function applyLocalizedTooltips() {
     "stcs-draft-summary": "Редактируемый текст драфта перед фиксацией",
     "stcs-export-checkpoints": "Экспортировать все чекпоинты в файл",
     "stcs-export-current-summary": "Экспортировать текущую сводную память в файл",
+    "stcs-move-aggregate-worldbook": "Создать или обновить одну запись Worldbook из всех саммари чекпоинтов",
     "stcs-import-checkpoints": "Импортировать чекпоинты из ранее экспортированного файла",
     "stcs-import-current-summary": "Импортировать текущую сводную память из файла",
     "stcs-summary-template": "Шаблон промпта для генерации нового саммари чекпоинта",
@@ -1422,13 +1423,17 @@ function formatCheckpointBlockForText(block) {
   const worldbookLine = block?.movedToWorldbook
     ? `Worldbook: ${block?.worldbookName ?? "n/a"} | Entry UID: ${block?.worldbookUid ?? "n/a"}`
     : null;
+  const aggregateWorldbookLine = block?.movedToWorldbookAggregate
+    ? `Aggregate Worldbook: ${block?.aggregateWorldbookName ?? "n/a"} | Entry UID: ${block?.aggregateWorldbookUid ?? "n/a"}`
+    : null;
   return [
     `Checkpoint ${block?.id ?? "n/a"}`,
     `Range: ${block?.memoryOnly ? "memory-only" : `${block?.startIndex ?? "?"}-${block?.endIndex ?? "?"}`}`,
     `Messages: ${Number(block?.messageCount ?? 0)}`,
     `Source tokens (est): ${Number(block?.sourceTokenCount ?? 0)}`,
-    `Status: ${block?.locked ? "locked" : "draft"}${block?.movedToWorldbook ? ", worldbook" : ""} | Inject: ${block?.inject !== false ? "on" : "off"}`,
+    `Status: ${block?.locked ? "locked" : "draft"}${block?.movedToWorldbook ? ", worldbook" : ""}${block?.movedToWorldbookAggregate ? ", aggregate-worldbook" : ""} | Inject: ${block?.inject !== false ? "on" : "off"}`,
     worldbookLine,
+    aggregateWorldbookLine,
     `Created: ${created} | Updated: ${updated}`,
     "",
     String(block?.summary ?? "").trim(),
@@ -1836,11 +1841,15 @@ function renderLockedBlocksList() {
     const statusParts = [statusBase];
     if (block.memoryOnly) statusParts.push("memory-only");
     if (block.movedToWorldbook) statusParts.push("worldbook");
+    if (block.movedToWorldbookAggregate) statusParts.push("aggregate-worldbook");
     const status = statusParts.join(", ");
     const rangeLabel = block.memoryOnly ? "memory-only" : `${block.startIndex}-${block.endIndex}`;
     const checkpointTitle = `Checkpoint ${String(idx + 1).padStart(3, "0")} (${escapeHtml(block.id)})`;
     const worldbookRef = block.movedToWorldbook
       ? `<div>Worldbook: ${escapeHtml(block.worldbookName || "n/a")} | Entry UID: ${escapeHtml(block.worldbookUid ?? "n/a")}</div>`
+      : "";
+    const aggregateWorldbookRef = block.movedToWorldbookAggregate
+      ? `<div>Aggregate Worldbook: ${escapeHtml(block.aggregateWorldbookName || "n/a")} | Entry UID: ${escapeHtml(block.aggregateWorldbookUid ?? "n/a")}</div>`
       : "";
     const worldbookButtonText = block.movedToWorldbook ? "Update Worldbook" : "Move to Worldbook";
 
@@ -1850,6 +1859,7 @@ function renderLockedBlocksList() {
         <div>Range: ${rangeLabel} | Messages: ${block.messageCount ?? "n/a"} | Source tokens(est): ${block.sourceTokenCount ?? "n/a"} | Summary tokens(est): ${summaryTokens}</div>
         <div>Created: ${escapeHtml(formatTimestamp(block.createdAt))} | Updated: ${escapeHtml(updatedText)} | Status: ${escapeHtml(status)} | Inject: ${injectEnabled ? "on" : "off"}</div>
         ${worldbookRef}
+        ${aggregateWorldbookRef}
         ${warningHtml}
         <div class="stcs-preview">${escapeHtml(preview || "(empty summary)")}</div>
         <div class="stcs-row">
@@ -3185,6 +3195,40 @@ function buildCheckpointWorldbookContent(block) {
   ].join("\n").trim();
 }
 
+function buildAggregateWorldbookContent(blocks) {
+  const checkpointText = blocks
+    .map((block, idx) => {
+      const checkpointNumber = String(idx + 1).padStart(3, "0");
+      const rangeLabel = isRangeCheckpoint(block) ? `${block.startIndex}-${block.endIndex}` : "memory-only";
+      return `[Checkpoint ${checkpointNumber} | ${block.id ?? "n/a"} | messages ${rangeLabel}]\n${String(block.summary ?? "").trim()}`;
+    })
+    .join("\n\n");
+
+  return [
+    "[CheckpointSummarize Aggregate Summary]",
+    `Updated at: ${new Date().toISOString()}`,
+    `Checkpoints: ${blocks.length}`,
+    "",
+    checkpointText,
+  ].join("\n").trim();
+}
+
+function getDefaultAggregateWorldbookName() {
+  const activeWorld = Array.isArray(selected_world_info)
+    ? selected_world_info.find((name) => Array.isArray(world_names) && world_names.includes(name))
+    : "";
+  if (activeWorld) return activeWorld;
+
+  const ctx = getContext();
+  const chatLabel = sanitizeFileNamePart(ctx?.name2 || ctx?.characterName || ctx?.groupName || ctx?.chatId || "chat");
+  return `STCS_${chatLabel}`;
+}
+
+function getAggregateWorldbookEntry(data) {
+  return Object.values(data?.entries ?? {})
+    .find((entry) => String(entry?.comment ?? "") === "STCS Aggregate Summary") ?? null;
+}
+
 function activateWorldbookIfNeeded(worldName) {
   const activeWorlds = Array.isArray(selected_world_info) ? selected_world_info.slice() : [];
   if (activeWorlds.includes(worldName)) return;
@@ -3262,6 +3306,62 @@ async function moveBlockToWorldbook(blockElement) {
   } catch (error) {
     console.error(`[${MODULE_NAME}] Failed to move checkpoint to Worldbook`, error);
     toastr.error(`Failed to move checkpoint to Worldbook: ${String(error?.message ?? error)}`, MODULE_NAME);
+  }
+}
+
+async function moveAggregateSummaryToWorldbook() {
+  const state = getState();
+  const blocks = getChronologicalLockedBlocks()
+    .filter((block) => hasVisibleText(block?.summary ?? ""));
+  if (!blocks.length) {
+    toastr.warning("Current summary is empty. Nothing to move.", MODULE_NAME);
+    return;
+  }
+
+  const defaultWorldbook = getDefaultAggregateWorldbookName();
+  const worldName = String(window.prompt("Move aggregate summary to Worldbook:", defaultWorldbook) ?? "").trim();
+  if (!worldName) return;
+
+  try {
+    const data = await loadOrCreateCheckpointWorldbook(worldName);
+    let entry = getAggregateWorldbookEntry(data);
+    if (!entry) {
+      entry = createWorldInfoEntry(worldName, data);
+    }
+    if (!entry) {
+      throw new Error("could not create Worldbook entry");
+    }
+
+    entry.comment = "STCS Aggregate Summary";
+    entry.content = buildAggregateWorldbookContent(blocks);
+    entry.constant = true;
+    entry.selective = false;
+    entry.disable = false;
+    entry.key = Array.isArray(entry.key) && entry.key.length ? entry.key : ["stcs:aggregate-summary"];
+    entry.keysecondary = Array.isArray(entry.keysecondary) ? entry.keysecondary : [];
+
+    await saveWorldInfo(worldName, data, true);
+    activateWorldbookIfNeeded(worldName);
+
+    const disableDirectInjection = window.confirm("Disable direct checkpoint injection to avoid duplicating this aggregate Worldbook entry in prompt?");
+    const updatedAt = Date.now();
+    for (const block of state.blocks) {
+      if (!blocks.some((sourceBlock) => sourceBlock.id === block.id)) continue;
+      if (disableDirectInjection) block.inject = false;
+      block.movedToWorldbookAggregate = true;
+      block.aggregateWorldbookName = worldName;
+      block.aggregateWorldbookUid = entry.uid;
+      block.aggregateWorldbookUpdatedAt = updatedAt;
+      block.updatedAt = updatedAt;
+    }
+
+    bumpBlocksRevision(state);
+    saveState();
+    renderStatus();
+    toastr.success(`Aggregate summary moved to Worldbook "${worldName}".`, MODULE_NAME);
+  } catch (error) {
+    console.error(`[${MODULE_NAME}] Failed to move aggregate summary to Worldbook`, error);
+    toastr.error(`Failed to move aggregate summary to Worldbook: ${String(error?.message ?? error)}`, MODULE_NAME);
   }
 }
 
@@ -3581,6 +3681,7 @@ function bindUiEvents() {
   const clearDraftBtn = document.getElementById("stcs-clear-draft");
   const exportCheckpointsBtn = document.getElementById("stcs-export-checkpoints");
   const exportCurrentSummaryBtn = document.getElementById("stcs-export-current-summary");
+  const moveAggregateWorldbookBtn = document.getElementById("stcs-move-aggregate-worldbook");
   const importCheckpointsBtn = document.getElementById("stcs-import-checkpoints");
   const importCurrentSummaryBtn = document.getElementById("stcs-import-current-summary");
   const draftSummaryEl = document.getElementById("stcs-draft-summary");
@@ -3807,6 +3908,9 @@ function bindUiEvents() {
   clearDraftBtn?.addEventListener("click", clearDraft);
   exportCheckpointsBtn?.addEventListener("click", exportCheckpoints);
   exportCurrentSummaryBtn?.addEventListener("click", exportCurrentSummary);
+  moveAggregateWorldbookBtn?.addEventListener("click", () => {
+    void moveAggregateSummaryToWorldbook();
+  });
   importCheckpointsBtn?.addEventListener("click", () => {
     void importCheckpoints();
   });

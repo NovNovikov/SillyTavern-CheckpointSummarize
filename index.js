@@ -386,6 +386,14 @@ function traceAutoMode(point, extra = {}) {
       autoModeEnabled: !!state.settings?.autoModeEnabled,
       autoApproveEnabled: !!state.settings?.autoApproveEnabled,
       noBrainModeEnabled: !!state.settings?.noBrainModeEnabled,
+      autoModeInFlight,
+      activeAutoModeRunId,
+      draftGenerationInFlight,
+      activeDraftGenerationRunId,
+      autoModeUiLocked,
+      tavernGenerationActive: isTavernGenerationActive(),
+      extensionGenerationActive: isExtensionGenerationActive(),
+      isSendPress: !!is_send_press,
       blocksRevision: getBlocksRevision(state),
       autoModeRangeDebugInfo,
       ...extra,
@@ -493,6 +501,7 @@ function isExtensionGenerationActive() {
 }
 
 function setAutoModeUiLock(locked) {
+  traceAutoMode("ui-lock:set-request", { requestedLocked: !!locked });
   if (locked && !autoModeUiLocked) {
     try {
       deactivateSendButtons();
@@ -505,6 +514,7 @@ function setAutoModeUiLock(locked) {
     } catch (error) {
       console.warn(`[${MODULE_NAME}] Failed to apply No Brain UI lock`, error);
     }
+    traceAutoMode("ui-lock:locked", { requestedLocked: !!locked });
     return;
   }
 
@@ -520,7 +530,11 @@ function setAutoModeUiLock(locked) {
     } catch (error) {
       console.warn(`[${MODULE_NAME}] Failed to release No Brain UI lock`, error);
     }
+    traceAutoMode("ui-lock:unlocked", { requestedLocked: !!locked });
+    return;
   }
+
+  traceAutoMode("ui-lock:unchanged", { requestedLocked: !!locked });
 }
 
 function scheduleAutoModeRun() {
@@ -701,7 +715,7 @@ async function runAutoMode() {
       const revisionBeforeGeneration = getBlocksRevision(loopState);
 
       const rangeBeforeSelect = getDraftRange(loopState.draft);
-      const needAutoSelectBefore = !isDraftRangeInsideGap(loopState.draft, loopStartIndex, loopGapEnd)
+      const needAutoSelectBefore = !isDraftRangeAtGapStart(loopState.draft, loopStartIndex, loopGapEnd)
         || isZeroZeroRange(rangeBeforeSelect)
         || isZeroZeroPlaceholder(rangeBeforeSelect, loopStartIndex, loopGapEnd);
       if (needAutoSelectBefore) {
@@ -712,7 +726,7 @@ async function runAutoMode() {
       setAutoModeRangeDebugInfo(
         `gap ${loopStartIndex}-${loopGapEnd} | before: ${rangeBeforeSelect ? `${rangeBeforeSelect.start}-${rangeBeforeSelect.end}` : "empty"} | after: ${rangeAfterSelect ? `${rangeAfterSelect.start}-${rangeAfterSelect.end}` : "empty"}`,
       );
-      const selectedStillInvalid = !isDraftRangeInsideGap(selectedRangeState.draft, loopStartIndex, loopGapEnd)
+      const selectedStillInvalid = !isDraftRangeAtGapStart(selectedRangeState.draft, loopStartIndex, loopGapEnd)
         || isZeroZeroRange(rangeAfterSelect)
         || isZeroZeroPlaceholder(rangeAfterSelect, loopStartIndex, loopGapEnd);
       if (selectedStillInvalid) {
@@ -791,11 +805,13 @@ async function runAutoMode() {
     }
   } finally {
     if (isCurrentAutoRun()) {
+      traceAutoMode("run:finally-before-unlock", { autoRunId });
       setAutoModeUiLock(false);
       autoModeInFlight = false;
       activeAutoModeRunId = 0;
       // Do not freeze future runs on the same range after a transient startup/backend failure.
       autoModeLastAttemptKey = "";
+      traceAutoMode("run:finally-after-reset", { autoRunId });
       const endState = getState();
       if (
         shouldRetrySoon
@@ -910,6 +926,12 @@ function isDraftRangeInsideGap(draft, gapStart, gapEnd) {
   const range = getDraftRange(draft);
   if (!range) return false;
   return range.start >= gapStart && range.end <= gapEnd;
+}
+
+function isDraftRangeAtGapStart(draft, gapStart, gapEnd) {
+  const range = getDraftRange(draft);
+  if (!range) return false;
+  return range.start === Number(gapStart) && range.end <= Number(gapEnd);
 }
 
 function isZeroZeroRange(range) {

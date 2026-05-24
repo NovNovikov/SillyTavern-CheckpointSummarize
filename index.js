@@ -2,7 +2,18 @@ import { getContext, saveMetadataDebounced } from "../../../extensions.js";
 import { activateSendButtons, deactivateSendButtons, eventSource, event_types, extension_prompt_roles, extension_prompt_types, getMaxContextSize, generateRaw, generateQuietPrompt, is_send_press, isGenerating } from "../../../../script.js";
 import { promptManager } from "../../../openai.js";
 import { itemizedPrompts, itemizedParams } from "../../../itemized-prompts.js";
-import { getWorldInfoPrompt, world_info_include_names } from "../../../world-info.js";
+import {
+  createNewWorldInfo,
+  createWorldInfoEntry,
+  getWorldInfoPrompt,
+  getWorldInfoSettings,
+  loadWorldInfo,
+  saveWorldInfo,
+  selected_world_info,
+  updateWorldInfoSettings,
+  world_info_include_names,
+  world_names,
+} from "../../../world-info.js";
 
 const MODULE_NAME = "CheckpointSummarize";
 const METADATA_KEY = "checkpoint_summarize";
@@ -596,6 +607,7 @@ function applyLocalizedTooltips() {
   setTitle(".stcs-action-save", "Сохранить изменения саммари этого чекпоинта");
   setTitle(".stcs-action-delete", "Удалить чекпоинт и открыть его диапазон как несуммаризованный");
   setTitle(".stcs-action-toggle-inject", "Включить или выключить инъекцию этого чекпоинта в память");
+  setTitle(".stcs-action-move-worldbook", "Перенести саммари чекпоинта в Worldbook и выключить его прямую инъекцию");
   setTitle(".stcs-block-editor", "Редактируемый полный текст саммари этого чекпоинта");
 }
 
@@ -1407,16 +1419,20 @@ function triggerDownloadJsonFile(fileName, payload) {
 function formatCheckpointBlockForText(block) {
   const created = block?.createdAt ? new Date(block.createdAt).toLocaleString() : "n/a";
   const updated = block?.updatedAt ? new Date(block.updatedAt).toLocaleString() : "n/a";
+  const worldbookLine = block?.movedToWorldbook
+    ? `Worldbook: ${block?.worldbookName ?? "n/a"} | Entry UID: ${block?.worldbookUid ?? "n/a"}`
+    : null;
   return [
     `Checkpoint ${block?.id ?? "n/a"}`,
     `Range: ${block?.memoryOnly ? "memory-only" : `${block?.startIndex ?? "?"}-${block?.endIndex ?? "?"}`}`,
     `Messages: ${Number(block?.messageCount ?? 0)}`,
     `Source tokens (est): ${Number(block?.sourceTokenCount ?? 0)}`,
-    `Status: ${block?.locked ? "locked" : "draft"} | Inject: ${block?.inject ? "on" : "off"}`,
+    `Status: ${block?.locked ? "locked" : "draft"}${block?.movedToWorldbook ? ", worldbook" : ""} | Inject: ${block?.inject !== false ? "on" : "off"}`,
+    worldbookLine,
     `Created: ${created} | Updated: ${updated}`,
     "",
     String(block?.summary ?? "").trim(),
-  ].join("\n");
+  ].filter((line) => line !== null).join("\n");
 }
 
 function exportCheckpoints() {
@@ -1817,15 +1833,23 @@ function renderLockedBlocksList() {
     const updatedText = block.updatedAt ? formatTimestamp(block.updatedAt) : "n/a";
     const injectEnabled = block.inject !== false;
     const statusBase = block.locked ? "locked" : "draft";
-    const status = block.memoryOnly ? `${statusBase}, memory-only` : statusBase;
+    const statusParts = [statusBase];
+    if (block.memoryOnly) statusParts.push("memory-only");
+    if (block.movedToWorldbook) statusParts.push("worldbook");
+    const status = statusParts.join(", ");
     const rangeLabel = block.memoryOnly ? "memory-only" : `${block.startIndex}-${block.endIndex}`;
     const checkpointTitle = `Checkpoint ${String(idx + 1).padStart(3, "0")} (${escapeHtml(block.id)})`;
+    const worldbookRef = block.movedToWorldbook
+      ? `<div>Worldbook: ${escapeHtml(block.worldbookName || "n/a")} | Entry UID: ${escapeHtml(block.worldbookUid ?? "n/a")}</div>`
+      : "";
+    const worldbookButtonText = block.movedToWorldbook ? "Update Worldbook" : "Move to Worldbook";
 
     return `
       <div class="stcs-block" data-block-id="${escapeHtml(block.id)}">
         <div><b>${checkpointTitle}</b></div>
         <div>Range: ${rangeLabel} | Messages: ${block.messageCount ?? "n/a"} | Source tokens(est): ${block.sourceTokenCount ?? "n/a"} | Summary tokens(est): ${summaryTokens}</div>
         <div>Created: ${escapeHtml(formatTimestamp(block.createdAt))} | Updated: ${escapeHtml(updatedText)} | Status: ${escapeHtml(status)} | Inject: ${injectEnabled ? "on" : "off"}</div>
+        ${worldbookRef}
         ${warningHtml}
         <div class="stcs-preview">${escapeHtml(preview || "(empty summary)")}</div>
         <div class="stcs-row">
@@ -1833,6 +1857,7 @@ function renderLockedBlocksList() {
           <button class="menu_button stcs-action-save" title="Save edited summary text for this checkpoint">Save edits</button>
           <button class="menu_button stcs-action-delete" title="Delete this checkpoint and reopen its range as unsummarized">Delete checkpoint</button>
           <button class="menu_button stcs-action-toggle-inject" title="${injectEnabled ? "Exclude this checkpoint from prompt injection" : "Include this checkpoint in prompt injection"}">${injectEnabled ? "Disable injection" : "Enable injection"}</button>
+          <button class="menu_button stcs-action-move-worldbook" title="Create or update a Worldbook entry from this checkpoint summary">${worldbookButtonText}</button>
         </div>
         <textarea class="text_pole stcs-block-editor" rows="8" style="display:none;" title="Editable full summary text for this checkpoint">${escapeHtml(block.summary ?? "")}</textarea>
       </div>
@@ -3139,6 +3164,107 @@ function toggleBlockInjection(blockElement) {
   scheduleAutoModeRun();
 }
 
+function getDefaultCheckpointWorldbookName(block) {
+  if (block?.worldbookName) return String(block.worldbookName);
+  const activeWorld = Array.isArray(selected_world_info)
+    ? selected_world_info.find((name) => Array.isArray(world_names) && world_names.includes(name))
+    : "";
+  if (activeWorld) return activeWorld;
+
+  const ctx = getContext();
+  const chatLabel = sanitizeFileNamePart(ctx?.name2 || ctx?.characterName || ctx?.groupName || ctx?.chatId || "chat");
+  return `STCS_${chatLabel}`;
+}
+
+function buildCheckpointWorldbookContent(block) {
+  const rangeLabel = block?.memoryOnly ? "memory-only" : `${block?.startIndex ?? "?"}-${block?.endIndex ?? "?"}`;
+  return [
+    `[CheckpointSummarize | ${block?.id ?? "checkpoint"} | messages ${rangeLabel}]`,
+    "",
+    String(block?.summary ?? "").trim(),
+  ].join("\n").trim();
+}
+
+function activateWorldbookIfNeeded(worldName) {
+  const activeWorlds = Array.isArray(selected_world_info) ? selected_world_info.slice() : [];
+  if (activeWorlds.includes(worldName)) return;
+  updateWorldInfoSettings(getWorldInfoSettings(), [...activeWorlds, worldName]);
+}
+
+async function loadOrCreateCheckpointWorldbook(worldName) {
+  if (!Array.isArray(world_names) || !world_names.includes(worldName)) {
+    const created = await createNewWorldInfo(worldName, { interactive: false });
+    if (!created) {
+      throw new Error(`could not create Worldbook "${worldName}"`);
+    }
+  }
+
+  const data = await loadWorldInfo(worldName);
+  if (!data || typeof data !== "object") {
+    throw new Error(`could not load Worldbook "${worldName}"`);
+  }
+  data.entries ??= {};
+  return data;
+}
+
+async function moveBlockToWorldbook(blockElement) {
+  const blockId = blockElement?.dataset?.blockId;
+  if (!blockId) return;
+  const idx = getBlockIndexById(blockId);
+  if (idx < 0) return;
+
+  const state = getState();
+  const block = state.blocks[idx];
+  const summary = normalizeSummaryOutput(block?.summary ?? "");
+  if (!hasVisibleText(summary)) {
+    toastr.warning(`Checkpoint ${blockId} has no summary to move.`, MODULE_NAME);
+    return;
+  }
+
+  const defaultWorldbook = getDefaultCheckpointWorldbookName(block);
+  const worldName = String(window.prompt(`Move checkpoint ${blockId} to Worldbook:`, defaultWorldbook) ?? "").trim();
+  if (!worldName) return;
+
+  try {
+    const data = await loadOrCreateCheckpointWorldbook(worldName);
+    const existingUid = Number(block.worldbookUid);
+    let entry = Number.isInteger(existingUid) ? data.entries?.[existingUid] : null;
+    if (!entry) {
+      entry = createWorldInfoEntry(worldName, data);
+    }
+    if (!entry) {
+      throw new Error("could not create Worldbook entry");
+    }
+
+    const rangeLabel = block.memoryOnly ? "memory-only" : `${block.startIndex}-${block.endIndex}`;
+    entry.comment = `STCS ${block.id} messages ${rangeLabel}`;
+    entry.content = buildCheckpointWorldbookContent({ ...block, summary });
+    entry.constant = true;
+    entry.selective = false;
+    entry.disable = false;
+    entry.key = Array.isArray(entry.key) && entry.key.length ? entry.key : [`stcs:${block.id}`];
+    entry.keysecondary = Array.isArray(entry.keysecondary) ? entry.keysecondary : [];
+
+    await saveWorldInfo(worldName, data, true);
+    activateWorldbookIfNeeded(worldName);
+
+    block.inject = false;
+    block.movedToWorldbook = true;
+    block.worldbookName = worldName;
+    block.worldbookUid = entry.uid;
+    block.worldbookMovedAt ??= Date.now();
+    block.worldbookUpdatedAt = Date.now();
+    block.updatedAt = Date.now();
+    bumpBlocksRevision(state);
+    saveState();
+    renderStatus();
+    toastr.success(`Checkpoint ${blockId} moved to Worldbook "${worldName}".`, MODULE_NAME);
+  } catch (error) {
+    console.error(`[${MODULE_NAME}] Failed to move checkpoint to Worldbook`, error);
+    toastr.error(`Failed to move checkpoint to Worldbook: ${String(error?.message ?? error)}`, MODULE_NAME);
+  }
+}
+
 function handleLockedListClick(event) {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
@@ -3160,6 +3286,10 @@ function handleLockedListClick(event) {
   }
   if (target.closest(".stcs-action-toggle-inject")) {
     toggleBlockInjection(blockElement);
+    return;
+  }
+  if (target.closest(".stcs-action-move-worldbook")) {
+    void moveBlockToWorldbook(blockElement);
   }
 }
 

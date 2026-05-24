@@ -70,6 +70,24 @@
   white-space: pre-wrap;
 }
 
+#st_checkpoint_summarize_settings .stcs-calc {
+  margin: 4px 0 10px;
+}
+
+#stcs-calc-title {
+  margin: 0 0 2px;
+}
+
+#stcs-calc-result-external {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+#stcs-summary-compression-inline-row {
+  display: block;
+  margin-top: 14px;
+}
+
 #st_checkpoint_summarize_settings .stcs-actions-row {
   align-items: flex-start;
   gap: 8px;

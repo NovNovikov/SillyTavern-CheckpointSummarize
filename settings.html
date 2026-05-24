@@ -101,44 +101,49 @@
           <span>Include in World Info scanning</span>
         </label>
         <div class="stcs-section stcs-calc">
-          <h4 id="stcs-calc-header">Context Budget</h4>
           <div id="stcs-calc-title"></div>
           <div id="stcs-calc-result-external"></div>
-          <div id="stcs-calc-submenu">
-            <label class="stcs-connection-profile-row">
-              Context Compression value
-              <select id="stcs-summary-compression-preset-submenu" class="text_pole" title="Summary compression ratio used for automatic summary block sizing">
-                <option value="huge">Huge compression (1/70)</option>
-                <option value="normal">Normal compression (1/50)</option>
-                <option value="light">Light compression (1/35)</option>
-                <option value="endless">Endless VRAM (1/20)</option>
-              </select>
-            </label>
-          <label class="checkbox_label">
-            <input id="stcs-calc-max-context" class="text_pole widthUnset inline_setting" type="number" min="1" step="1" title="Backend maximum context window size" />
-            <span>Max context tokens</span>
-          </label>
-          <label class="checkbox_label">
-            <input id="stcs-calc-expected-response" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Expected response token budget reserved outside summary generation" />
-            <span>Expected response tokens</span>
-          </label>
-          <label class="checkbox_label">
-            <input id="stcs-calc-lorebook" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated Lorebook/World Info token cost" />
-            <span>Lorebook tokens</span>
-          </label>
-          <label class="checkbox_label">
-            <input id="stcs-calc-system" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated system instruction token cost" />
-            <span>System instruction tokens</span>
-          </label>
-          <label class="checkbox_label">
-            <input id="stcs-calc-character" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated character card token cost" />
-            <span>Character card tokens</span>
-          </label>
-          <div class="stcs-row stcs-actions-row">
-            <button id="stcs-calc-apply" class="menu_button" title="Recalculate raw block and summary limits from calculator fields">Calculate Limits</button>
-            <button id="stcs-calc-autofill-itemization" class="menu_button" title="Fill calculator fields from latest chat prompt itemization">Auto fill from chat</button>
-          </div>
-          <div id="stcs-calc-result"></div>
+          <div id="stcs-calc-drawer" class="inline-drawer">
+            <div id="stcs-calc-drawer-header" class="inline-drawer-toggle inline-drawer-header" title="Open or collapse Context Budget Calculator">
+              <b>Context Budget Calculator</b>
+              <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+            </div>
+            <div id="stcs-calc-submenu" class="inline-drawer-content" style="display: none;">
+              <label class="stcs-connection-profile-row">
+                Context Compression value
+                <select id="stcs-summary-compression-preset-submenu" class="text_pole" title="Summary compression ratio used for automatic summary block sizing">
+                  <option value="huge">Huge compression (1/70)</option>
+                  <option value="normal">Normal compression (1/50)</option>
+                  <option value="light">Light compression (1/35)</option>
+                  <option value="endless">Endless VRAM (1/20)</option>
+                </select>
+              </label>
+              <label class="checkbox_label">
+                <input id="stcs-calc-max-context" class="text_pole widthUnset inline_setting" type="number" min="1" step="1" title="Backend maximum context window size" />
+                <span>Max context tokens</span>
+              </label>
+              <label class="checkbox_label">
+                <input id="stcs-calc-expected-response" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Expected response token budget reserved outside summary generation" />
+                <span>Expected response tokens</span>
+              </label>
+              <label class="checkbox_label">
+                <input id="stcs-calc-lorebook" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated Lorebook/World Info token cost" />
+                <span>Lorebook tokens</span>
+              </label>
+              <label class="checkbox_label">
+                <input id="stcs-calc-system" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated system instruction token cost" />
+                <span>System instruction tokens</span>
+              </label>
+              <label class="checkbox_label">
+                <input id="stcs-calc-character" class="text_pole widthUnset inline_setting" type="number" min="0" step="1" title="Estimated character card token cost" />
+                <span>Character card tokens</span>
+              </label>
+              <div class="stcs-row stcs-actions-row">
+                <button id="stcs-calc-apply" class="menu_button" title="Recalculate raw block and summary limits from calculator fields">Calculate Limits</button>
+                <button id="stcs-calc-autofill-itemization" class="menu_button" title="Fill calculator fields from latest chat prompt itemization">Auto fill from chat</button>
+              </div>
+              <div id="stcs-calc-result"></div>
+            </div>
           </div>
         </div>
       </div>

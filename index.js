@@ -3247,13 +3247,12 @@ function renderStatus() {
   const useWorldbookInDraftEl = document.getElementById("stcs-use-worldbook-in-draft");
   const calcMaxContextEl = document.getElementById("stcs-calc-max-context");
   const calcTitleEl = document.getElementById("stcs-calc-title");
-  const calcHeaderEl = document.getElementById("stcs-calc-header");
-  const calcSubmenuEl = document.getElementById("stcs-calc-submenu");
+  const calcDrawerEl = document.getElementById("stcs-calc-drawer");
   const calcExpectedResponseEl = document.getElementById("stcs-calc-expected-response");
   const calcLorebookEl = document.getElementById("stcs-calc-lorebook");
   const calcSystemEl = document.getElementById("stcs-calc-system");
   const calcCharacterEl = document.getElementById("stcs-calc-character");
-  const calcResultSubmenuEl = document.getElementById("stcs-calc-result-submenu");
+  const calcResultSubmenuEl = document.getElementById("stcs-calc-result");
   const calcResultExternalEl = document.getElementById("stcs-calc-result-external");
   const injectionPositionEl = document.getElementById("stcs-injection-position");
   const injectionDepthEl = document.getElementById("stcs-injection-depth");
@@ -3392,13 +3391,9 @@ function renderStatus() {
     calcTitleEl.textContent = state.settings.noBrainModeEnabled ? "Context Budget" : "";
     calcTitleEl.style.display = state.settings.noBrainModeEnabled ? "" : "none";
   }
-  if (calcHeaderEl instanceof HTMLElement) {
-    calcHeaderEl.style.display = state.settings.noBrainModeEnabled ? "none" : "";
+  if (calcDrawerEl instanceof HTMLElement) {
+    calcDrawerEl.style.display = state.settings.noBrainModeEnabled ? "none" : "";
   }
-  if (calcSubmenuEl instanceof HTMLElement) {
-    calcSubmenuEl.style.display = state.settings.noBrainModeEnabled ? "none" : "";
-  }
-
   if (draftSectionEl instanceof HTMLElement) {
     draftSectionEl.style.display = state.settings.noBrainModeEnabled ? "none" : "";
   }

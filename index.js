@@ -302,7 +302,11 @@ function upsertAfterWiPromptManagerInjection(text, roleNumber) {
 }
 
 let hydrationTimer = null;
-function scheduleHydrationRefresh() {
+let hydrationRunAutoModeAfterRefresh = false;
+function scheduleHydrationRefresh(options = {}) {
+  if (options.runAutoModeAfterRefresh) {
+    hydrationRunAutoModeAfterRefresh = true;
+  }
   if (hydrationTimer) {
     clearTimeout(hydrationTimer);
     hydrationTimer = null;
@@ -320,7 +324,12 @@ function scheduleHydrationRefresh() {
     // If state appeared (or timeout reached), force one render/update pass.
     if (hasState || attempts >= maxAttempts) {
       renderStatus();
+      const shouldRunAutoMode = hydrationRunAutoModeAfterRefresh;
+      hydrationRunAutoModeAfterRefresh = false;
       hydrationTimer = null;
+      if (shouldRunAutoMode) {
+        scheduleAutoModeRun();
+      }
       return;
     }
 
@@ -374,6 +383,7 @@ function resetTransientRuntimeForChatChange() {
     clearTimeout(hydrationTimer);
     hydrationTimer = null;
   }
+  hydrationRunAutoModeAfterRefresh = false;
   if (autoModeTimer) {
     clearTimeout(autoModeTimer);
     autoModeTimer = null;
@@ -3655,12 +3665,10 @@ jQuery(async () => {
     saveState();
   }
   await renderUI();
-  scheduleHydrationRefresh();
-  scheduleAutoModeRun();
+  scheduleHydrationRefresh({ runAutoModeAfterRefresh: true });
 
   const refresh = () => {
-    scheduleHydrationRefresh();
-    scheduleAutoModeRun();
+    scheduleHydrationRefresh({ runAutoModeAfterRefresh: true });
   };
   if (event_types?.CHAT_CHANGED) {
     eventSource?.on?.(event_types.CHAT_CHANGED, () => {

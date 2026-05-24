@@ -805,13 +805,14 @@ async function runAutoMode() {
     }
   } finally {
     if (isCurrentAutoRun()) {
-      traceAutoMode("run:finally-before-unlock", { autoRunId });
-      setAutoModeUiLock(false);
+      traceAutoMode("run:finally-before-reset", { autoRunId });
       autoModeInFlight = false;
       activeAutoModeRunId = 0;
       // Do not freeze future runs on the same range after a transient startup/backend failure.
       autoModeLastAttemptKey = "";
-      traceAutoMode("run:finally-after-reset", { autoRunId });
+      traceAutoMode("run:finally-before-unlock", { autoRunId });
+      setAutoModeUiLock(false);
+      traceAutoMode("run:finally-after-unlock", { autoRunId });
       const endState = getState();
       if (
         shouldRetrySoon

@@ -2800,6 +2800,7 @@ function applyNoBrainUiLock() {
     "stcs-export-current-summary",
     "stcs-import-checkpoints",
     "stcs-import-current-summary",
+    "stcs-move-aggregate-worldbook",
   ]);
   const generationActive = isExtensionGenerationActive();
   const setControlHidden = (element, hidden) => {
@@ -2843,15 +2844,13 @@ function applyNoBrainUiLock() {
           || el.classList.contains("stcs-action-delete")
         );
         if (generationActive) {
-          const generationLocked = !isEditAction;
+          const generationLocked = !(isEditAction || isInjectToggleAction);
           el.disabled = generationLocked;
           const hideByNoBrain = noBrainOn && generationLocked;
           setControlHidden(el, hideByNoBrain);
           return;
         }
-        const lockAndHide = isInjectToggleAction
-          ? noBrainOn
-          : (isSaveOrDeleteAction && generationActive);
+        const lockAndHide = isSaveOrDeleteAction && generationActive;
         el.disabled = lockAndHide;
         setControlHidden(el, lockAndHide);
         return;

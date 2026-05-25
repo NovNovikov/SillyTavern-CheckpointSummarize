@@ -1,4 +1,4 @@
-import { getContext, saveMetadataDebounced } from "../../../extensions.js";
+import { cancelDebouncedMetadataSave, getContext, saveMetadataDebounced } from "../../../extensions.js";
 import { activateSendButtons, deactivateSendButtons, eventSource, event_types, extension_prompt_roles, extension_prompt_types, getMaxContextSize, generateRaw, generateQuietPrompt, is_send_press, isGenerating } from "../../../../script.js";
 import { promptManager } from "../../../openai.js";
 import { itemizedPrompts, itemizedParams } from "../../../itemized-prompts.js";
@@ -215,8 +215,19 @@ function getState() {
   return ensureState();
 }
 
-function saveState() {
+function saveState(options = {}) {
+  const { persist = true } = options;
+  if (!persist) return;
   saveMetadataDebounced();
+}
+
+function cancelPendingMetadataSave(reason = "") {
+  try {
+    cancelDebouncedMetadataSave?.();
+    traceAutoMode("metadata-save:cancelled", { reason });
+  } catch (error) {
+    console.warn(`[${MODULE_NAME}] Failed to cancel pending metadata save`, error);
+  }
 }
 
 function getBlocksRevision(state = null) {
@@ -788,7 +799,7 @@ async function runAutoMode() {
         state.draft.previousSummariesTokenCount = 0;
         state.draft.summary = "";
         state.draft.generatedAt = null;
-        saveState();
+        saveState({ persist: false });
         renderStatus();
         setAutoModeRangeDebugInfo("stale draft cleared (invalid/placeholder/0-0 range)");
         scheduleAutoModeRun();
@@ -947,7 +958,11 @@ async function runAutoMode() {
         needAutoSelectBefore,
         revisionBeforeGeneration,
       });
-      const draftGenerated = await generateDraftCheckpoint({ skipPostNoBrainMaintenance: true });
+      cancelPendingMetadataSave("before-auto-generate");
+      const draftGenerated = await generateDraftCheckpoint({
+        skipPostNoBrainMaintenance: true,
+        persistDraft: false,
+      });
       if (!isCurrentAutoRun()) break;
 
       const nextState = getState();
@@ -975,7 +990,7 @@ async function runAutoMode() {
         // Drop stale draft and regenerate against fresh memory state.
         nextState.draft.summary = "";
         nextState.draft.generatedAt = null;
-        saveState();
+        saveState({ persist: false });
         renderStatus();
         safetyCycles += 1;
         continue;
@@ -2368,13 +2383,14 @@ function clearDraftRangeSelection(state = null) {
   s.draft.generatedAt = null;
 }
 
-function autoSelectNextRange() {
+function autoSelectNextRange(options = {}) {
+  const { persist = true } = options;
   const state = getState();
   const chat = getChatMessages();
 
   if (!chat.length) {
     clearDraftRangeSelection(state);
-    saveState();
+    saveState({ persist });
     renderStatus();
     return;
   }
@@ -2382,7 +2398,7 @@ function autoSelectNextRange() {
   const firstGap = getFirstGapInfo(chat.length);
   if (!firstGap) {
     clearDraftRangeSelection(state);
-    saveState();
+    saveState({ persist });
     renderStatus();
     return;
   }
@@ -2403,7 +2419,7 @@ function autoSelectNextRange() {
     state.draft.endIndex = null;
     state.draft.sourceTokenCount = 0;
     state.draft.previousSummariesTokenCount = previousSummariesTokenCount;
-    saveState();
+    saveState({ persist });
     renderStatus();
     toastr.warning("No raw-block budget left after mandatory prompts. Reduce fixed prompt load.", MODULE_NAME);
     return;
@@ -2435,7 +2451,7 @@ function autoSelectNextRange() {
     availableContext,
     rawBlockBudget,
   });
-  saveState();
+  saveState({ persist });
   renderStatus();
 }
 
@@ -2447,7 +2463,7 @@ function autoSelectNextRangeForAutoMode(reason = "") {
   if (!chat.length || !firstGap) {
     if (!hasVisibleText(state.draft?.summary ?? "")) {
       clearDraftRangeSelection(state);
-      saveState();
+      saveState({ persist: false });
       renderStatus();
     }
     traceAutoMode("auto-select:skipped-no-gap", { reason });
@@ -2466,7 +2482,7 @@ function autoSelectNextRangeForAutoMode(reason = "") {
       && (!draftRange || isDraftRangeInsideGap(state.draft, startIndex, gapEnd));
     if (shouldClearDraftRange) {
       clearDraftRangeSelection(state);
-      saveState();
+      saveState({ persist: false });
       renderStatus();
     }
     setAutoModeRangeDebugInfo(`gap ${startIndex}-${gapEnd} below target (${gapTokens}<${targetTokens})`);
@@ -2481,7 +2497,7 @@ function autoSelectNextRangeForAutoMode(reason = "") {
     return false;
   }
 
-  autoSelectNextRange();
+  autoSelectNextRange({ persist: false });
   traceAutoMode("auto-select:selected-eligible-gap", {
     reason,
     firstGap,
@@ -2492,7 +2508,7 @@ function autoSelectNextRangeForAutoMode(reason = "") {
 }
 
 async function generateDraftCheckpoint(options = {}) {
-  const { skipPostNoBrainMaintenance = false } = options;
+  const { skipPostNoBrainMaintenance = false, persistDraft = true } = options;
   if (draftGenerationInFlight || activeDraftGenerationRunId !== 0) {
     toastr.warning("Draft generation is already in progress.", MODULE_NAME);
     return false;
@@ -2520,7 +2536,7 @@ async function generateDraftCheckpoint(options = {}) {
     state.draft.previousSummariesTokenCount = 0;
     state.draft.summary = "";
     state.draft.generatedAt = null;
-    saveState();
+    saveState({ persist: persistDraft });
     renderStatus();
     toastr.warning("Range 0-0 is blocked. Use Autoselect next block to pick a valid range.", MODULE_NAME);
     return false;
@@ -2593,16 +2609,19 @@ async function generateDraftCheckpoint(options = {}) {
       return false;
     }
 
-    state.draft.summary = normalizedSummary;
-    state.draft.generatedAt = Date.now();
-    state.draft.sourceTokenCount = calculateMessageRangeTokens(start, end);
-    state.draft.previousSummariesTokenCount = state.settings.includeAllPreviousSummaries
+    const writeState = getState();
+    writeState.draft.startIndex = start;
+    writeState.draft.endIndex = end;
+    writeState.draft.summary = normalizedSummary;
+    writeState.draft.generatedAt = Date.now();
+    writeState.draft.sourceTokenCount = calculateMessageRangeTokens(start, end);
+    writeState.draft.previousSummariesTokenCount = writeState.settings.includeAllPreviousSummaries
       ? countTokens(buildPreviousSummariesText(start))
       : 0;
 
     forceSetDraftTextareaValue(normalizedSummary, { start, end });
 
-    saveState();
+    saveState({ persist: persistDraft });
     renderStatus();
     if (!skipPostNoBrainMaintenance) {
       await runNoBrainMaintenanceCycle({ silent: true });

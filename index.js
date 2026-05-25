@@ -21,6 +21,7 @@ const METADATA_KEY = "checkpoint_summarize";
 const INJECTION_POSITION_AFTER_WORLD_INFO = 3;
 const AFTER_WI_PROMPT_ID = "stcs_after_wi_memory";
 const AFTER_WI_PROMPT_NAME = "STCS Checkpoint Memory";
+const MEMORY_IGNORE_SYMBOL = Symbol.for("ignore");
 
 const DEFAULT_SUMMARY_PROMPT_TEMPLATE = `You are maintaining a long-term modular memory for a roleplay/chat.
 
@@ -574,6 +575,7 @@ function traceAutoMode(point, extra = {}) {
       id: block.id,
       start: Number(block.startIndex),
       end: Number(block.endIndex),
+      activeMessages: countMemoryVisibleMessages(block.startIndex, block.endIndex),
       sourceTokens: Number(block.sourceTokenCount || 0),
     }));
 
@@ -961,7 +963,7 @@ async function runAutoMode() {
       cancelPendingMetadataSave("before-auto-generate");
       const draftGenerated = await generateDraftCheckpoint({
         skipPostNoBrainMaintenance: true,
-        persistDraft: false,
+        persistDraft: !loopAutoDrainMode,
       });
       if (!isCurrentAutoRun()) break;
 
@@ -1063,6 +1065,26 @@ function isRangeCheckpoint(block) {
   return !block?.memoryOnly && Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end >= start;
 }
 
+function isMessageHiddenFromMemory(message) {
+  return !!message?.is_system || !!message?.extra?.[MEMORY_IGNORE_SYMBOL];
+}
+
+function chatRangeContainsHiddenFromMemoryMessage(startIndex, endIndex) {
+  const chat = getChatMessages();
+  const start = Math.max(0, Number(startIndex));
+  const end = Math.min(chat.length - 1, Number(endIndex));
+  if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) return false;
+  for (let i = start; i <= end; i++) {
+    if (isMessageHiddenFromMemory(chat[i])) return true;
+  }
+  return false;
+}
+
+function rangeContainsHiddenFromMemoryMessage(block) {
+  if (!isRangeCheckpoint(block)) return false;
+  return chatRangeContainsHiddenFromMemoryMessage(block.startIndex, block.endIndex);
+}
+
 function getSortedRangeCheckpoints() {
   return getLockedBlocks()
     .filter((b) => isRangeCheckpoint(b))
@@ -1084,6 +1106,7 @@ function getCoverageGaps(chatLength) {
   const total = Number(chatLength);
   if (!Number.isInteger(total) || total <= 0) return [];
 
+  const chat = getChatMessages();
   const ranges = getSortedRangeCheckpoints();
   const gaps = [];
   let cursor = 0;
@@ -1104,7 +1127,12 @@ function getCoverageGaps(chatLength) {
     gaps.push({ start: cursor, end: total - 1 });
   }
 
-  return gaps;
+  return gaps.filter((gap) => {
+    for (let i = Number(gap.start); i <= Number(gap.end); i++) {
+      if (!isMessageHiddenFromMemory(chat[i])) return true;
+    }
+    return false;
+  });
 }
 
 function getFirstGapInfo(chatLength) {
@@ -1381,14 +1409,41 @@ function getMessageHash(message) {
   return simpleHash(identity);
 }
 
-function getRangeMessages(startIndex, endIndex) {
+function getRangeMessageEntries(startIndex, endIndex, options = {}) {
+  const { includeHiddenFromMemory = false } = options;
   const chat = getChatMessages();
   if (!chat.length) return [];
   const start = Number(startIndex);
   const end = Number(endIndex);
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start) return [];
   const cappedEnd = Math.min(end, chat.length - 1);
-  return chat.slice(start, cappedEnd + 1);
+  const entries = [];
+  for (let i = start; i <= cappedEnd; i++) {
+    const message = chat[i];
+    if (!includeHiddenFromMemory && isMessageHiddenFromMemory(message)) continue;
+    entries.push({ index: i, message });
+  }
+  return entries;
+}
+
+function getRangeMessages(startIndex, endIndex, options = {}) {
+  return getRangeMessageEntries(startIndex, endIndex, options).map((entry) => entry.message);
+}
+
+function countMemoryVisibleMessages(startIndex, endIndex) {
+  return getRangeMessageEntries(startIndex, endIndex).length;
+}
+
+function formatRangeLabel(startIndex, endIndex, options = {}) {
+  const { includeActiveCount = false } = options;
+  const start = Number(startIndex);
+  const end = Number(endIndex);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start) return "n/a";
+  const range = `${start}-${end}`;
+  if (!includeActiveCount) return range;
+  const total = end - start + 1;
+  const active = countMemoryVisibleMessages(start, end);
+  return active === total ? range : `${range} (${active} active)`;
 }
 
 function getNextStartIndex() {
@@ -1408,6 +1463,7 @@ function calculateMessageRangeTokens(startIndex, endIndex) {
   const cappedEnd = Math.min(end, chat.length - 1);
   let total = 0;
   for (let i = start; i <= cappedEnd; i++) {
+    if (isMessageHiddenFromMemory(chat[i])) continue;
     total += countTokens(getMessageChunk(i, chat[i]));
   }
   return total;
@@ -1883,6 +1939,9 @@ function getBlockValidationWarnings(block) {
 
   const startHashNow = getMessageHash(chat[start]);
   const endHashNow = getMessageHash(chat[end]);
+  if (rangeContainsHiddenFromMemoryMessage(block)) {
+    warnings.push("Checkpoint overlaps message(s) hidden from memory. Review summary/injection manually.");
+  }
   if (block.startHash && block.startHash !== startHashNow) {
     warnings.push("Start message hash mismatch. Range may have changed.");
   }
@@ -1919,7 +1978,9 @@ function renderLockedBlocksList() {
     if (block.movedToWorldbook) statusParts.push("worldbook");
     if (block.movedToWorldbookAggregate) statusParts.push("aggregate-worldbook");
     const status = statusParts.join(", ");
-    const rangeLabel = block.memoryOnly ? "memory-only" : `${block.startIndex}-${block.endIndex}`;
+    const rangeLabel = block.memoryOnly
+      ? "memory-only"
+      : formatRangeLabel(block.startIndex, block.endIndex, { includeActiveCount: true });
     const checkpointTitle = `Checkpoint ${String(idx + 1).padStart(3, "0")} (${escapeHtml(block.id)})`;
     const worldbookRef = block.movedToWorldbook
       ? `<div>Worldbook: ${escapeHtml(block.worldbookName || "n/a")} | Entry UID: ${escapeHtml(block.worldbookUid ?? "n/a")}</div>`
@@ -1954,10 +2015,10 @@ function renderLockedBlocksList() {
 }
 
 function buildRawBlockText(startIndex, endIndex) {
-  const messages = getRangeMessages(startIndex, endIndex);
-  if (!messages.length) return "";
-  return messages
-    .map((msg, idx) => getMessageChunk(startIndex + idx, msg))
+  const entries = getRangeMessageEntries(startIndex, endIndex);
+  if (!entries.length) return "";
+  return entries
+    .map(({ index, message }) => getMessageChunk(index, message))
     .join("\n");
 }
 
@@ -2430,6 +2491,10 @@ function autoSelectNextRange(options = {}) {
   let endIndex = startIndex;
 
   for (let i = startIndex; i <= gapEndIndex; i++) {
+    if (isMessageHiddenFromMemory(chat[i])) {
+      endIndex = i;
+      continue;
+    }
     const msgTokens = countTokens(getMessageChunk(i, chat[i]));
     if (sourceTokenCount + msgTokens > rawBlockBudget && i > startIndex) break;
     sourceTokenCount += msgTokens;
@@ -2541,7 +2606,6 @@ async function generateDraftCheckpoint(options = {}) {
     toastr.warning("Range 0-0 is blocked. Use Autoselect next block to pick a valid range.", MODULE_NAME);
     return false;
   }
-
   const rawBlock = buildRawBlockText(start, end);
   if (!rawBlock.trim()) {
     toastr.warning("Selected range has no content to summarize.", MODULE_NAME);
@@ -2683,7 +2747,6 @@ async function lockDraftCheckpoint(options = {}) {
     setExtensionStatusError("invalid draft range");
     return false;
   }
-
   if (draftRange.start === 0 && draftRange.end === 0) {
     state.draft.startIndex = null;
     state.draft.endIndex = null;
@@ -3577,7 +3640,9 @@ function renderStatus() {
     (sum, g) => sum + calculateMessageRangeTokens(Number(g.start), Number(g.end)),
     0,
   );
-  const firstGapLabel = firstGap ? `${firstGap.start}-${firstGap.end}` : "n/a";
+  const firstGapLabel = firstGap
+    ? formatRangeLabel(firstGap.start, firstGap.end, { includeActiveCount: true })
+    : "n/a";
   const firstGapTokens = firstGap ? calculateMessageRangeTokens(Number(firstGap.start), Number(firstGap.end)) : 0;
   const autoModeEnabled = !!state.settings.autoModeEnabled;
   const inProgress = isExtensionGenerationActive();

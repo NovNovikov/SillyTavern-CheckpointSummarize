@@ -12,6 +12,7 @@ import {
   selected_world_info,
   updateWorldInfoSettings,
   world_info_include_names,
+  world_info_position,
   world_names,
 } from "../../../world-info.js";
 
@@ -363,6 +364,43 @@ let draftTextareaWriteSeq = 0;
 let lastWorldInfoResolutionReason = "not attempted yet";
 let lastExtensionStatusError = "";
 let autoModeRangeDebugInfo = "n/a";
+let activeChatIdentity = "";
+let metadataObjectSeq = 0;
+const metadataObjectIds = new WeakMap();
+
+function getMetadataObjectId(metadata) {
+  if (!metadata || typeof metadata !== "object") return "";
+  if (!metadataObjectIds.has(metadata)) {
+    metadataObjectSeq += 1;
+    metadataObjectIds.set(metadata, metadataObjectSeq);
+  }
+  return String(metadataObjectIds.get(metadata));
+}
+
+function getCurrentChatIdentity() {
+  const ctx = getContext();
+  const metadata = getMetadataRoot();
+  const explicitParts = [
+    ctx?.chatId,
+    ctx?.characterId,
+    ctx?.this_chid,
+    ctx?.groupId,
+    ctx?.selected_group,
+  ]
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean);
+  if (explicitParts.length) return explicitParts.join("|");
+
+  const fallbackParts = [
+    ctx?.name2,
+    ctx?.characterName,
+    ctx?.groupName,
+    getMetadataObjectId(metadata),
+  ]
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean);
+  return fallbackParts.join("|") || "unknown";
+}
 
 function setWorldInfoResolutionReason(reason) {
   lastWorldInfoResolutionReason = String(reason ?? "").trim() || "unknown";
@@ -452,7 +490,7 @@ function buildStatusText({
   ].filter(Boolean).join(" | ");
 }
 
-function resetTransientRuntimeForChatChange() {
+function resetTransientRuntimeForChatChange(extraTrace = {}) {
   const hadHydrationTimer = !!hydrationTimer;
   const hadAutoModeTimer = !!autoModeTimer;
   const hadAutoModeInFlight = !!autoModeInFlight || activeAutoModeRunId !== 0;
@@ -488,7 +526,30 @@ function resetTransientRuntimeForChatChange() {
     hadAutoModeInFlight,
     hadDraftGenerationInFlight,
     hadUiLock,
+    ...extraTrace,
   });
+}
+
+function handleChatChangedEvent() {
+  const previousChatIdentity = activeChatIdentity || getCurrentChatIdentity();
+  const nextChatIdentity = getCurrentChatIdentity();
+  const sameChat = previousChatIdentity === nextChatIdentity;
+  activeChatIdentity = nextChatIdentity;
+
+  if (sameChat) {
+    traceAutoMode("chat-change:same-chat-refresh", {
+      previousChatIdentity,
+      nextChatIdentity,
+    });
+    scheduleHydrationRefresh({ runAutoModeAfterRefresh: true });
+    return;
+  }
+
+  resetTransientRuntimeForChatChange({
+    previousChatIdentity,
+    nextChatIdentity,
+  });
+  scheduleHydrationRefresh({ runAutoModeAfterRefresh: true });
 }
 
 function traceAutoMode(point, extra = {}) {
@@ -3194,24 +3255,6 @@ function buildCheckpointWorldbookContent(block) {
   ].join("\n").trim();
 }
 
-function buildAggregateWorldbookContent(blocks) {
-  const checkpointText = blocks
-    .map((block, idx) => {
-      const checkpointNumber = String(idx + 1).padStart(3, "0");
-      const rangeLabel = isRangeCheckpoint(block) ? `${block.startIndex}-${block.endIndex}` : "memory-only";
-      return `[Checkpoint ${checkpointNumber} | ${block.id ?? "n/a"} | messages ${rangeLabel}]\n${String(block.summary ?? "").trim()}`;
-    })
-    .join("\n\n");
-
-  return [
-    "[CheckpointSummarize Aggregate Summary]",
-    `Updated at: ${new Date().toISOString()}`,
-    `Checkpoints: ${blocks.length}`,
-    "",
-    checkpointText,
-  ].join("\n").trim();
-}
-
 function getDefaultAggregateWorldbookName() {
   const activeWorld = Array.isArray(selected_world_info)
     ? selected_world_info.find((name) => Array.isArray(world_names) && world_names.includes(name))
@@ -3285,6 +3328,7 @@ async function moveBlockToWorldbook(blockElement) {
     entry.constant = true;
     entry.selective = false;
     entry.disable = false;
+    entry.position = world_info_position.after;
     entry.key = Array.isArray(entry.key) && entry.key.length ? entry.key : [`stcs:${block.id}`];
     entry.keysecondary = Array.isArray(entry.keysecondary) ? entry.keysecondary : [];
 
@@ -3316,6 +3360,11 @@ async function moveAggregateSummaryToWorldbook() {
     toastr.warning("Current summary is empty. Nothing to move.", MODULE_NAME);
     return;
   }
+  const aggregateSummary = buildInjectionText();
+  if (!hasVisibleText(aggregateSummary)) {
+    toastr.warning("Injection template produced empty summary. Nothing to move.", MODULE_NAME);
+    return;
+  }
 
   const defaultWorldbook = getDefaultAggregateWorldbookName();
   const worldName = String(window.prompt("Move aggregate summary to Worldbook:", defaultWorldbook) ?? "").trim();
@@ -3332,10 +3381,11 @@ async function moveAggregateSummaryToWorldbook() {
     }
 
     entry.comment = "STCS Aggregate Summary";
-    entry.content = buildAggregateWorldbookContent(blocks);
+    entry.content = aggregateSummary;
     entry.constant = true;
     entry.selective = false;
     entry.disable = false;
+    entry.position = world_info_position.after;
     entry.key = Array.isArray(entry.key) && entry.key.length ? entry.key : ["stcs:aggregate-summary"];
     entry.keysecondary = Array.isArray(entry.keysecondary) ? entry.keysecondary : [];
 
@@ -3959,6 +4009,7 @@ async function renderUI() {
 
 jQuery(async () => {
   const state = ensureState();
+  activeChatIdentity = getCurrentChatIdentity();
   if (applyNoBrainPresetIfEnabled(state)) {
     saveState();
   }
@@ -3969,10 +4020,7 @@ jQuery(async () => {
     scheduleHydrationRefresh({ runAutoModeAfterRefresh: true });
   };
   if (event_types?.CHAT_CHANGED) {
-    eventSource?.on?.(event_types.CHAT_CHANGED, () => {
-      resetTransientRuntimeForChatChange();
-      refresh();
-    });
+    eventSource?.on?.(event_types.CHAT_CHANGED, handleChatChangedEvent);
   }
   if (event_types?.CHARACTER_MESSAGE_RENDERED) {
     eventSource?.on?.(event_types.CHARACTER_MESSAGE_RENDERED, refresh);

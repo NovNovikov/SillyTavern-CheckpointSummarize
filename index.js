@@ -2051,7 +2051,7 @@ function fillTemplate(template, replacements) {
   return out;
 }
 
-function buildSummaryPrompt() {
+function buildSummaryPrompt(options = {}) {
   const state = getState();
   const draft = state.draft;
   const startIndex = Number(draft.startIndex);
@@ -2059,7 +2059,7 @@ function buildSummaryPrompt() {
   const previousSummaries = state.settings.includeAllPreviousSummaries ? buildPreviousSummariesText(startIndex) : "";
   const rawBlock = buildRawBlockText(startIndex, endIndex);
   const checkpointNumber = getLockedBlocks().length + 1;
-  const targetSummaryTokens = Number(state.settings.targetSummaryTokens || 0);
+  const targetSummaryTokens = resolveSummaryTargetTokens(options.targetSummaryTokens, state);
   const targetSummaryWords = estimateGemma4WordsFromTokens(targetSummaryTokens);
 
   const templatedPrompt = fillTemplate(
@@ -2608,6 +2608,7 @@ async function summarizeTailNow() {
   const { firstGap, tailTokens, targetTokens } = eligibility;
   const start = Number(firstGap.start);
   const end = Number(firstGap.end);
+  const tailSummaryTokens = calculateScaledSummaryTargetTokens(tailTokens, targetTokens, state);
   const autoRunId = ++autoModeRunSeq;
   const isCurrentAutoRun = () => activeAutoModeRunId === autoRunId;
 
@@ -2617,6 +2618,7 @@ async function summarizeTailNow() {
     end,
     tailTokens,
     targetTokens,
+    tailSummaryTokens,
     activeMessages: countMemoryVisibleMessages(start, end),
   });
 
@@ -2639,6 +2641,7 @@ async function summarizeTailNow() {
     const draftGenerated = await generateDraftCheckpoint({
       skipPostNoBrainMaintenance: true,
       persistDraft: false,
+      targetSummaryTokens: tailSummaryTokens,
     });
     if (!isCurrentAutoRun()) return false;
 
@@ -2653,7 +2656,7 @@ async function summarizeTailNow() {
       return false;
     }
 
-    const lockOk = await lockDraftCheckpoint({ silent: true, forbidZeroZero: true });
+    const lockOk = await lockDraftCheckpoint({ silent: true, forbidZeroZero: true, targetSummaryTokens: tailSummaryTokens });
     traceAutoMode("tail-now:after-lock", { autoRunId, lockOk });
     if (!lockOk) {
       const postLockState = getState();
@@ -2685,7 +2688,7 @@ async function summarizeTailNow() {
 }
 
 async function generateDraftCheckpoint(options = {}) {
-  const { skipPostNoBrainMaintenance = false, persistDraft = true } = options;
+  const { skipPostNoBrainMaintenance = false, persistDraft = true, targetSummaryTokens = null } = options;
   if (draftGenerationInFlight || activeDraftGenerationRunId !== 0) {
     toastr.warning("Draft generation is already in progress.", MODULE_NAME);
     return false;
@@ -2724,13 +2727,13 @@ async function generateDraftCheckpoint(options = {}) {
     return false;
   }
 
-  const prompt = buildSummaryPrompt();
+  const generationTargetSummaryTokens = resolveSummaryTargetTokens(targetSummaryTokens, state);
+  const prompt = buildSummaryPrompt({ targetSummaryTokens: generationTargetSummaryTokens });
   const promptTokens = countTokens(prompt);
-  const targetSummaryTokens = Number(state.settings.targetSummaryTokens || 800);
   const budgetBase = getCheckpointContextBudgetBase();
   const promptBudget = budgetBase.availableAfterMandatory
     - Number(state.settings.safetyMarginTokens || 0)
-    - targetSummaryTokens;
+    - generationTargetSummaryTokens;
   const draftRunId = ++draftGenerationRunSeq;
   const isCurrentDraftRun = () => activeDraftGenerationRunId === draftRunId;
 
@@ -2842,7 +2845,7 @@ function makeCheckpointId() {
 }
 
 async function lockDraftCheckpoint(options = {}) {
-  const { silent = false, forbidZeroZero = false } = options;
+  const { silent = false, forbidZeroZero = false, targetSummaryTokens = null } = options;
   const state = getState();
   const chat = getChatMessages();
   const draftRange = getDraftRange(state.draft);
@@ -2901,7 +2904,7 @@ async function lockDraftCheckpoint(options = {}) {
     messageCount: end - start + 1,
     sourceTokenCount: calculateMessageRangeTokens(start, end),
     previousSummariesTokenCount: state.draft.previousSummariesTokenCount || 0,
-    targetSummaryTokens: Number(state.settings.targetSummaryTokens || 0),
+    targetSummaryTokens: resolveSummaryTargetTokens(targetSummaryTokens, state),
     summary,
     locked: true,
     inject: true,
@@ -3165,6 +3168,25 @@ function estimateGemma4WordsFromTokens(tokens) {
   const n = Number(tokens);
   if (!Number.isFinite(n) || n <= 0) return 1;
   return Math.max(1, Math.round(n / GEMMA4_TOKENS_PER_WORD));
+}
+
+function resolveSummaryTargetTokens(value, state = getState()) {
+  const fallback = Number(state?.settings?.targetSummaryTokens || DEFAULT_STATE.settings.targetSummaryTokens);
+  const n = Number(value ?? fallback);
+  if (!Number.isFinite(n) || n <= 0) return Math.max(1, fallback);
+  return Math.max(1, Math.round(n));
+}
+
+function calculateScaledSummaryTargetTokens(sourceTokens, fullSourceTokens, state = getState()) {
+  const fullSummaryTokens = resolveSummaryTargetTokens(null, state);
+  const source = Number(sourceTokens);
+  const fullSource = Number(fullSourceTokens);
+  if (!Number.isFinite(source) || !Number.isFinite(fullSource) || source <= 0 || fullSource <= 0) {
+    return fullSummaryTokens;
+  }
+  const ratio = Math.min(1, Math.max(0, source / fullSource));
+  const scaled = Math.min(fullSummaryTokens, Math.max(SUMMARY_MIN, fullSummaryTokens * ratio));
+  return normalizeByStep(scaled, SUMMARY_MIN, SUMMARY_STEP);
 }
 
 function applyTargetsFromRawBlock(rawBlockTokens) {

@@ -3870,6 +3870,9 @@ function renderStatus() {
     const blockSize = Math.max(0, getEffectiveRawBlockTargetTokens(state));
     const summaryBlockSize = Math.max(0, Number(state.settings.targetSummaryTokens || 0));
     const compression = getSummaryCompressionDisplay(state);
+    if (state.settings.noBrainModeEnabled) {
+      return `Backend context: ${backendContext} | Available context (minus prompts etc): ${availableContext} | Block size: ${blockSize} | Compression formula: ${compression.formula} (${compression.label})`;
+    }
     return `Backend context: ${backendContext} | Available context (minus prompts etc): ${availableContext} | Block size: ${blockSize} | Summary block size: ${summaryBlockSize} | Compression formula: ${compression.formula} (${compression.label})`;
   })();
   if (calcResultSubmenuEl) {

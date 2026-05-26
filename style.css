@@ -26,6 +26,14 @@
   white-space: nowrap;
 }
 
+#st_checkpoint_summarize_settings #stcs-summarize-tail-now {
+  white-space: normal;
+}
+
+#st_checkpoint_summarize_settings .stcs-tail-actions {
+  margin: 4px 0 6px;
+}
+
 #stcs-memory-preview {
   max-height: 220px;
   overflow: auto;
@@ -91,10 +99,6 @@
 #st_checkpoint_summarize_settings .stcs-actions-row {
   align-items: flex-start;
   gap: 8px;
-}
-
-#st_checkpoint_summarize_settings .stcs-tail-actions {
-  margin-top: 8px;
 }
 
 #st_checkpoint_summarize_settings .stcs-actions-row .menu_button {

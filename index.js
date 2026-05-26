@@ -438,6 +438,7 @@ function buildStatusText({
   state,
   lockedCount,
   summarizedTokens,
+  currentSummaryTokens,
   lastLocked,
   firstGap,
   firstGapLabel,
@@ -464,6 +465,7 @@ function buildStatusText({
       "Easy mode: on",
       `Checkpoints: ${lockedCount}`,
       `Summarized: ${summarizedTokens} tokens`,
+      `Summary: ${currentSummaryTokens} tokens`,
       `Next batch: ${nextBatch}`,
       `Status: ${statusLabel}`,
     ];
@@ -482,6 +484,7 @@ function buildStatusText({
       `Injection: ${state.injectionEnabled ? "yes" : "no"}`,
       "Auto mode: on",
       `Locked checkpoints: ${lockedCount}`,
+      `Summary tokens: ${currentSummaryTokens}`,
       `First gap: ${firstGapLabel}`,
       `Unsummarized tokens: ${unsummarizedTokensTotal}`,
       `Status: ${autoStatus}`,
@@ -493,6 +496,7 @@ function buildStatusText({
     `Injection: ${state.injectionEnabled ? "yes" : "no"}`,
     `Locked checkpoints: ${lockedCount}`,
     `Summarized tokens (est): ${summarizedTokens}`,
+    `Current summary tokens (est): ${currentSummaryTokens}`,
     `Last summarized message: ${lastLocked ? lastLocked.endIndex : "n/a"}`,
     `First gap: ${firstGapLabel}`,
     `Unsummarized messages: ${unsummarizedCount}`,
@@ -2572,6 +2576,114 @@ function autoSelectNextRangeForAutoMode(reason = "") {
   return true;
 }
 
+function getTailSummaryEligibility() {
+  const state = getState();
+  const chat = getChatMessages();
+  const firstGap = getFirstGapInfo(chat.length);
+  const targetTokens = getEffectiveRawBlockTargetTokens(state);
+
+  if (!state.enabled) return { eligible: false, reason: "extension disabled", firstGap, targetTokens, tailTokens: 0 };
+  if (!state.settings.noBrainModeEnabled) return { eligible: false, reason: "easy mode disabled", firstGap, targetTokens, tailTokens: 0 };
+  if (!state.settings.autoApproveEnabled) return { eligible: false, reason: "auto approve disabled", firstGap, targetTokens, tailTokens: 0 };
+  if (isExtensionGenerationActive() || is_send_press) return { eligible: false, reason: "generation active", firstGap, targetTokens, tailTokens: 0 };
+  if (!firstGap) return { eligible: false, reason: "no unsummarized tail", firstGap, targetTokens, tailTokens: 0 };
+  if (firstGap.hasCoveredContentAfter) return { eligible: false, reason: "first gap is not tail", firstGap, targetTokens, tailTokens: 0 };
+
+  const tailTokens = calculateMessageRangeTokens(Number(firstGap.start), Number(firstGap.end));
+  if (tailTokens <= 0) return { eligible: false, reason: "tail has no visible messages", firstGap, targetTokens, tailTokens };
+  if (tailTokens >= targetTokens) return { eligible: false, reason: "tail already reached batch limit", firstGap, targetTokens, tailTokens };
+
+  return { eligible: true, reason: "tail below batch limit", firstGap, targetTokens, tailTokens };
+}
+
+async function summarizeTailNow() {
+  const eligibility = getTailSummaryEligibility();
+  if (!eligibility.eligible) {
+    toastr.warning(`Cannot summarize tail now: ${eligibility.reason}.`, MODULE_NAME);
+    renderStatus();
+    return false;
+  }
+
+  const state = getState();
+  const { firstGap, tailTokens, targetTokens } = eligibility;
+  const start = Number(firstGap.start);
+  const end = Number(firstGap.end);
+  const autoRunId = ++autoModeRunSeq;
+  const isCurrentAutoRun = () => activeAutoModeRunId === autoRunId;
+
+  traceAutoMode("tail-now:start", {
+    autoRunId,
+    start,
+    end,
+    tailTokens,
+    targetTokens,
+    activeMessages: countMemoryVisibleMessages(start, end),
+  });
+
+  state.draft.startIndex = start;
+  state.draft.endIndex = end;
+  state.draft.sourceTokenCount = tailTokens;
+  state.draft.previousSummariesTokenCount = state.settings.includeAllPreviousSummaries
+    ? countTokens(buildPreviousSummariesText(start))
+    : 0;
+  state.draft.summary = "";
+  state.draft.generatedAt = null;
+  saveState({ persist: false });
+  renderStatus();
+
+  autoModeInFlight = true;
+  activeAutoModeRunId = autoRunId;
+  try {
+    setAutoModeUiLock(true);
+    cancelPendingMetadataSave("before-tail-now-generate");
+    const draftGenerated = await generateDraftCheckpoint({
+      skipPostNoBrainMaintenance: true,
+      persistDraft: false,
+    });
+    if (!isCurrentAutoRun()) return false;
+
+    const postGenerateState = getState();
+    traceAutoMode("tail-now:after-generate", {
+      autoRunId,
+      draftGenerated: !!draftGenerated,
+      draftHasSummary: hasVisibleText(postGenerateState.draft?.summary ?? ""),
+    });
+    if (!draftGenerated || !hasVisibleText(postGenerateState.draft?.summary ?? "")) {
+      setExtensionStatusError("tail summary generation produced no summary");
+      return false;
+    }
+
+    const lockOk = await lockDraftCheckpoint({ silent: true, forbidZeroZero: true });
+    traceAutoMode("tail-now:after-lock", { autoRunId, lockOk });
+    if (!lockOk) {
+      const postLockState = getState();
+      if (hasVisibleText(postLockState.draft?.summary ?? "")) {
+        setExtensionStatusError("tail summary auto-lock failed");
+      }
+      return false;
+    }
+
+    await runNoBrainMaintenanceCycle({ silent: true });
+    toastr.success("Tail summarized and locked.", MODULE_NAME);
+    return true;
+  } catch (error) {
+    console.warn(`[${MODULE_NAME}] Tail summary failed`, error);
+    if (isCurrentAutoRun()) {
+      setExtensionStatusError(String(error?.message ?? error ?? "tail summary failed"));
+    }
+    return false;
+  } finally {
+    if (isCurrentAutoRun()) {
+      traceAutoMode("tail-now:finally", { autoRunId });
+      autoModeInFlight = false;
+      activeAutoModeRunId = 0;
+      setAutoModeUiLock(false);
+      renderStatus();
+      scheduleAutoModeRun();
+    }
+  }
+}
+
 async function generateDraftCheckpoint(options = {}) {
   const { skipPostNoBrainMaintenance = false, persistDraft = true } = options;
   if (draftGenerationInFlight || activeDraftGenerationRunId !== 0) {
@@ -2943,6 +3055,7 @@ function applyNoBrainUiLock() {
     "stcs-export-current-summary",
     "stcs-import-checkpoints",
     "stcs-import-current-summary",
+    "stcs-summarize-tail-now",
     "stcs-move-aggregate-worldbook",
   ]);
   const generationActive = isExtensionGenerationActive();
@@ -3622,6 +3735,7 @@ function renderStatus() {
   const summaryTemplateEl = document.getElementById("stcs-summary-template");
   const injectionTemplateEl = document.getElementById("stcs-injection-template");
   const draftSectionEl = document.getElementById("stcs-draft-section");
+  const summarizeTailNowBtn = document.getElementById("stcs-summarize-tail-now");
   const startIndexEl = document.getElementById("stcs-start-index");
   const endIndexEl = document.getElementById("stcs-end-index");
   const rangeInfoEl = document.getElementById("stcs-range-info");
@@ -3632,6 +3746,8 @@ function renderStatus() {
   const chat = getChatMessages();
   const locked = getLockedBlocks();
   const summarizedTokens = locked.reduce((sum, block) => sum + Number(block?.sourceTokenCount || 0), 0);
+  const previewText = buildInjectionText();
+  const currentSummaryTokens = previewText ? countTokens(previewText) : 0;
   const lastLocked = getLastLockedBlock();
   const gaps = getCoverageGaps(chat.length);
   const firstGap = gaps.length ? gaps[0] : null;
@@ -3658,6 +3774,7 @@ function renderStatus() {
     : (lastExtensionStatusError
       ? `error: ${lastExtensionStatusError}`
       : ((waitingForBatch || noBrainWaiting) ? "waiting" : "idle"));
+  const tailSummaryEligibility = getTailSummaryEligibility();
 
   enabledEl.checked = !!state.enabled;
   if (noBrainModeEl) noBrainModeEl.checked = !!state.settings.noBrainModeEnabled;
@@ -3693,12 +3810,25 @@ function renderStatus() {
   if (draftSummaryEl && (document.activeElement !== draftSummaryEl || !hasVisibleText(draftSummaryEl.value))) {
     draftSummaryEl.value = state.draft.summary ?? "";
   }
+  if (summarizeTailNowBtn instanceof HTMLButtonElement) {
+    const showTailButton = !!state.settings.noBrainModeEnabled
+      && !!firstGap
+      && !firstGap.hasCoveredContentAfter
+      && firstGapTokens > 0
+      && firstGapTokens < targetTokens;
+    summarizeTailNowBtn.style.display = showTailButton ? "" : "none";
+    summarizeTailNowBtn.disabled = !tailSummaryEligibility.eligible;
+    summarizeTailNowBtn.title = tailSummaryEligibility.eligible
+      ? `Generate and lock a checkpoint from tail ${firstGapLabel} (${firstGapTokens}/${targetTokens} tokens)`
+      : `Cannot summarize tail now: ${tailSummaryEligibility.reason}`;
+  }
 
   statusEl.style.whiteSpace = "pre-wrap";
   statusEl.textContent = buildStatusText({
     state,
     lockedCount: locked.length,
     summarizedTokens,
+    currentSummaryTokens,
     lastLocked,
     firstGap,
     firstGapLabel,
@@ -3761,7 +3891,6 @@ function renderStatus() {
     draftSectionEl.style.display = state.settings.noBrainModeEnabled ? "none" : "";
   }
 
-  const previewText = buildInjectionText();
   if (!state.enabled) {
     previewEl.textContent = "[Injection disabled] Extension is disabled.";
   } else if (!state.injectionEnabled || Number(state.settings.injectionPosition) === -1) {
@@ -3808,6 +3937,7 @@ function bindUiEvents() {
   const startIndexEl = document.getElementById("stcs-start-index");
   const endIndexEl = document.getElementById("stcs-end-index");
   const autoSelectBtn = document.getElementById("stcs-auto-select-next-block");
+  const summarizeTailNowBtn = document.getElementById("stcs-summarize-tail-now");
   const calcLimitsFromRangeBtn = document.getElementById("stcs-calc-limits-from-range");
   const generateDraftBtn = document.getElementById("stcs-generate-draft");
   const lockCheckpointBtn = document.getElementById("stcs-lock-checkpoint");
@@ -4031,6 +4161,9 @@ function bindUiEvents() {
   startIndexEl?.addEventListener("change", updateDraftRangeFromInputs);
   endIndexEl?.addEventListener("change", updateDraftRangeFromInputs);
   autoSelectBtn?.addEventListener("click", autoSelectNextRange);
+  summarizeTailNowBtn?.addEventListener("click", () => {
+    void summarizeTailNow();
+  });
   calcLimitsFromRangeBtn?.addEventListener("click", applyLimitsFromSelectedRange);
   generateDraftBtn?.addEventListener("click", () => {
     void generateDraftCheckpoint();

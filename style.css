@@ -73,6 +73,13 @@
   margin-top: 6px;
 }
 
+#st_checkpoint_summarize_settings .stcs-warn {
+  color: var(--warning);
+  font-weight: 600;
+  margin-top: 6px;
+  white-space: pre-wrap;
+}
+
 #stcs-calc-result {
   margin-top: 6px;
   white-space: pre-wrap;

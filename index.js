@@ -22,6 +22,9 @@ const INJECTION_POSITION_AFTER_WORLD_INFO = 3;
 const AFTER_WI_PROMPT_ID = "stcs_after_wi_memory";
 const AFTER_WI_PROMPT_NAME = "STCS Checkpoint Memory";
 const MEMORY_IGNORE_SYMBOL = Symbol.for("ignore");
+const STCS_HIDDEN_MARKER_KEY = "checkpointSummarizeHidden";
+const STCS_HIDDEN_MARKER_VERSION = 1;
+const STCS_VISIBLE_TAIL_MESSAGES = 5;
 
 const DEFAULT_SUMMARY_PROMPT_TEMPLATE = `You are maintaining a long-term modular memory for a roleplay/chat.
 
@@ -101,6 +104,7 @@ const DEFAULT_STATE = {
     connectionProfile: "",
     useProfilePromptStack: true,
     useWorldbookInDraft: true,
+    hideSummarizedMessages: false,
     summaryCompressionPreset: "normal",
     calculator: {
       maxContextTokens: 98304,
@@ -169,6 +173,7 @@ function ensureState() {
   state.settings.connectionProfile ??= DEFAULT_STATE.settings.connectionProfile;
   state.settings.useProfilePromptStack ??= DEFAULT_STATE.settings.useProfilePromptStack;
   state.settings.useWorldbookInDraft ??= DEFAULT_STATE.settings.useWorldbookInDraft;
+  state.settings.hideSummarizedMessages ??= DEFAULT_STATE.settings.hideSummarizedMessages;
   state.settings.summaryCompressionPreset = sanitizeSummaryCompressionPreset(
     state.settings.summaryCompressionPreset ?? DEFAULT_STATE.settings.summaryCompressionPreset,
   );
@@ -342,7 +347,7 @@ function scheduleHydrationRefresh(options = {}) {
   const maxAttempts = 24; // ~6s with 250ms step
   const stepMs = 250;
 
-  const tick = () => {
+  const tick = async () => {
     attempts += 1;
     const metadata = getMetadataRoot();
     const hasState = !!(metadata && typeof metadata[METADATA_KEY] === "object");
@@ -353,6 +358,12 @@ function scheduleHydrationRefresh(options = {}) {
       const shouldRunAutoMode = hydrationRunAutoModeAfterRefresh;
       hydrationRunAutoModeAfterRefresh = false;
       hydrationTimer = null;
+      if (!isVisibilitySyncBlocked()) {
+        await syncSummarizedMessageVisibility("hydration");
+      } else {
+        markVisibilitySyncPending("hydration");
+        renderStatus();
+      }
       if (shouldRunAutoMode) {
         scheduleAutoModeRun();
       }
@@ -642,6 +653,7 @@ function applyLocalizedTooltips() {
     "stcs-injection-enabled": "Вставлять заблокированные чекпоинты в основной промпт",
     "stcs-use-profile-prompt-stack": "Использовать полный стек промптов профиля подключения при генерации драфта",
     "stcs-use-worldbook-in-draft": "Использовать World Info при генерации драфта",
+    "stcs-hide-summarized-messages": "Скрывать из памяти сообщения, уже покрытые чекпоинтами",
     "stcs-include-prev-summaries": "Передавать все предыдущие зафиксированные саммари как контекст",
     "stcs-auto-mode-enabled": "Автоматически генерировать саммари, когда несуммаризованный хвост достигает размера блока",
     "stcs-auto-approve-enabled": "Автоматически фиксировать сгенерированный драфт как чекпоинт",
@@ -1071,8 +1083,346 @@ function isRangeCheckpoint(block) {
   return !block?.memoryOnly && Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end >= start;
 }
 
+function ensureMessageExtra(message) {
+  if (!message || typeof message !== "object") return null;
+  if (!message.extra || typeof message.extra !== "object") {
+    message.extra = {};
+  }
+  return message.extra;
+}
+
+function getStcsHiddenMarker(message) {
+  const marker = message?.extra?.[STCS_HIDDEN_MARKER_KEY];
+  return marker && typeof marker === "object" ? marker : null;
+}
+
 function isMessageHiddenFromMemory(message) {
   return !!message?.is_system || !!message?.extra?.[MEMORY_IGNORE_SYMBOL];
+}
+
+function setMessageHiddenFromMemory(message, hidden, index = null) {
+  if (!message || typeof message !== "object") return false;
+  const nextHidden = !!hidden;
+  const changed = !!message.is_system !== nextHidden;
+  message.is_system = nextHidden;
+
+  const messageIndex = Number(index);
+  if (Number.isInteger(messageIndex) && typeof $ === "function") {
+    const messageBlock = $(`.mes[mesid="${messageIndex}"]`);
+    if (messageBlock?.length) {
+      messageBlock.attr("is_system", String(nextHidden));
+    }
+  }
+
+  return changed;
+}
+
+function refreshMessageVisibilityUi() {
+  try {
+    getContext()?.swipe?.refresh?.();
+  } catch (error) {
+    console.warn(`[${MODULE_NAME}] Failed to refresh swipe buttons after visibility change`, error);
+  }
+}
+
+function hasStcsHiddenMarker(message) {
+  return getStcsHiddenMarker(message)?.owned === true;
+}
+
+function normalizeBlockIdList(blockIds) {
+  const raw = Array.isArray(blockIds) ? blockIds : [blockIds];
+  return [...new Set(raw.map((id) => String(id ?? "").trim()).filter(Boolean))].sort();
+}
+
+function blockIdListsEqual(a, b) {
+  const left = normalizeBlockIdList(a);
+  const right = normalizeBlockIdList(b);
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function writeStcsHiddenMarker(message, patch = {}) {
+  const extra = ensureMessageExtra(message);
+  if (!extra) return false;
+
+  const previous = getStcsHiddenMarker(message) ?? {};
+  const nextCore = {
+    owned: true,
+    version: STCS_HIDDEN_MARKER_VERSION,
+    blockIds: normalizeBlockIdList(patch.blockIds ?? previous.blockIds ?? []),
+    userHiddenBeforeStcs: !!(patch.userHiddenBeforeStcs ?? previous.userHiddenBeforeStcs),
+    restoredByUser: !!(patch.restoredByUser ?? previous.restoredByUser),
+  };
+  const previousCore = {
+    owned: previous.owned === true,
+    version: Number(previous.version ?? 0),
+    blockIds: normalizeBlockIdList(previous.blockIds ?? []),
+    userHiddenBeforeStcs: !!previous.userHiddenBeforeStcs,
+    restoredByUser: !!previous.restoredByUser,
+  };
+
+  const changed = JSON.stringify(previousCore) !== JSON.stringify(nextCore);
+  if (!changed) return false;
+  const next = {
+    ...nextCore,
+    updatedAt: Number(patch.updatedAt ?? Date.now()),
+  };
+  extra[STCS_HIDDEN_MARKER_KEY] = next;
+  return changed;
+}
+
+function addStcsHiddenOwner(message, blockId) {
+  const marker = getStcsHiddenMarker(message);
+  const blockIds = normalizeBlockIdList([...(Array.isArray(marker?.blockIds) ? marker.blockIds : []), blockId]);
+  return writeStcsHiddenMarker(message, { blockIds, restoredByUser: false });
+}
+
+function removeStcsHiddenOwner(message, blockId) {
+  const marker = getStcsHiddenMarker(message);
+  if (!marker) return false;
+  const removeIds = new Set(normalizeBlockIdList(blockId));
+  const blockIds = normalizeBlockIdList(marker.blockIds).filter((id) => !removeIds.has(id));
+  if (!blockIds.length) return clearStcsHiddenMarker(message);
+  return writeStcsHiddenMarker(message, { blockIds });
+}
+
+function clearStcsHiddenMarker(message) {
+  if (!message?.extra || typeof message.extra !== "object") return false;
+  if (!Object.prototype.hasOwnProperty.call(message.extra, STCS_HIDDEN_MARKER_KEY)) return false;
+  delete message.extra[STCS_HIDDEN_MARKER_KEY];
+  return true;
+}
+
+function isUserHiddenFromMemoryMessage(message) {
+  return isMessageHiddenFromMemory(message) && !hasStcsHiddenMarker(message);
+}
+
+function isValidCoverageCheckpoint(block, chat = getChatMessages()) {
+  if (!isRangeCheckpoint(block)) return false;
+  const start = Number(block.startIndex);
+  const end = Number(block.endIndex);
+  if (start >= chat.length || end >= chat.length) return false;
+  if (block.startHash && chat[start] && block.startHash !== getMessageHash(chat[start])) return false;
+  if (block.endHash && chat[end] && block.endHash !== getMessageHash(chat[end])) return false;
+  return true;
+}
+
+function getVisibilityCoverageBlocks(chat = getChatMessages()) {
+  return getLockedBlocks()
+    .filter((block) => isValidCoverageCheckpoint(block, chat))
+    .sort((a, b) => Number(a.startIndex) - Number(b.startIndex) || Number(a.endIndex) - Number(b.endIndex));
+}
+
+function collectCoverageByMessageIndex(chat = getChatMessages()) {
+  const coverage = new Map();
+  for (const block of getVisibilityCoverageBlocks(chat)) {
+    const start = Math.max(0, Number(block.startIndex));
+    const end = Math.min(chat.length - 1, Number(block.endIndex));
+    for (let i = start; i <= end; i++) {
+      const ids = coverage.get(i) ?? [];
+      ids.push(String(block.id ?? ""));
+      coverage.set(i, normalizeBlockIdList(ids));
+    }
+  }
+  return coverage;
+}
+
+function collectCoveredMessageIndexes() {
+  return new Set(collectCoverageByMessageIndex().keys());
+}
+
+function isVisibilitySyncBlocked() {
+  return !!(
+    draftGenerationInFlight
+    || activeDraftGenerationRunId !== 0
+    || is_send_press
+    || isTavernGenerationActive()
+  );
+}
+
+function markVisibilitySyncPending(reason = "") {
+  const state = getState();
+  state.runtime ??= {};
+  state.runtime.visibilitySyncPending = {
+    reason: String(reason || "unknown"),
+    updatedAt: Date.now(),
+  };
+  traceAutoMode("visibility-sync:pending", { reason });
+}
+
+function clearVisibilitySyncPending() {
+  const state = getState();
+  if (!state.runtime || !state.runtime.visibilitySyncPending) return false;
+  delete state.runtime.visibilitySyncPending;
+  return true;
+}
+
+let visibilitySyncTimer = null;
+let visibilitySyncInFlight = false;
+
+function schedulePendingVisibilitySync(reason = "") {
+  if (visibilitySyncTimer) {
+    clearTimeout(visibilitySyncTimer);
+    visibilitySyncTimer = null;
+  }
+  visibilitySyncTimer = setTimeout(() => {
+    visibilitySyncTimer = null;
+    const state = getState();
+    if (!state.runtime?.visibilitySyncPending || isVisibilitySyncBlocked()) return;
+    void syncSummarizedMessageVisibility(`pending:${reason || state.runtime.visibilitySyncPending.reason || "unknown"}`);
+  }, 250);
+}
+
+function schedulePendingVisibilitySyncIfReady(reason = "") {
+  const state = getState();
+  if (!state.runtime?.visibilitySyncPending || isVisibilitySyncBlocked()) return;
+  schedulePendingVisibilitySync(reason);
+}
+
+function syncMarkerBlockOwners(message, blockIds, options = {}) {
+  return writeStcsHiddenMarker(message, {
+    blockIds,
+    userHiddenBeforeStcs: !!options.userHiddenBeforeStcs,
+    restoredByUser: !!options.restoredByUser,
+  });
+}
+
+async function syncSummarizedMessageVisibility(reason = "") {
+  if (visibilitySyncInFlight) return { changed: false, saved: false, skipped: false, alreadyRunning: true };
+  const state = getState();
+  const chat = getChatMessages();
+
+  if (!chat.length) {
+    const changed = clearVisibilitySyncPending();
+    const saved = changed ? await flushMetadataNow() : false;
+    renderStatus();
+    return { changed, saved, skipped: false };
+  }
+
+  if (isVisibilitySyncBlocked()) {
+    markVisibilitySyncPending(reason);
+    renderStatus();
+    return { changed: false, saved: false, skipped: true };
+  }
+
+  visibilitySyncInFlight = true;
+  let changed = false;
+  let visibilityChanged = false;
+  try {
+    if (!state.settings.hideSummarizedMessages) {
+      for (let i = 0; i < chat.length; i++) {
+        const message = chat[i];
+        const marker = getStcsHiddenMarker(message);
+        if (!marker?.owned) continue;
+
+        if (isMessageHiddenFromMemory(message) && !marker.userHiddenBeforeStcs) {
+          const hiddenChanged = setMessageHiddenFromMemory(message, false, i);
+          visibilityChanged = hiddenChanged || visibilityChanged;
+          changed = hiddenChanged || changed;
+        }
+        changed = clearStcsHiddenMarker(message) || changed;
+      }
+
+      changed = clearVisibilitySyncPending() || changed;
+      if (visibilityChanged) refreshMessageVisibilityUi();
+      const saved = changed ? await flushMetadataNow() : false;
+      traceAutoMode("visibility-sync:disabled", { reason, changed, saved });
+      renderStatus();
+      return { changed, saved, skipped: false };
+    }
+
+    const coverageByIndex = collectCoverageByMessageIndex(chat);
+    const keepVisibleStart = Math.max(0, chat.length - STCS_VISIBLE_TAIL_MESSAGES);
+
+    for (let i = 0; i < chat.length; i++) {
+      const message = chat[i];
+      const marker = getStcsHiddenMarker(message);
+      const owned = marker?.owned === true;
+      const hidden = isMessageHiddenFromMemory(message);
+      const coveringBlockIds = normalizeBlockIdList(coverageByIndex.get(i) ?? []);
+      const shouldHide = coveringBlockIds.length > 0 && i < keepVisibleStart;
+
+      if (shouldHide) {
+        if (hidden && !owned) {
+          continue;
+        }
+
+        if (owned && !hidden) {
+          const coverageChanged = !blockIdListsEqual(marker.blockIds, coveringBlockIds);
+          if (!coverageChanged) {
+            if (!marker.restoredByUser) {
+              changed = writeStcsHiddenMarker(message, {
+                blockIds: marker.blockIds,
+                restoredByUser: true,
+                userHiddenBeforeStcs: !!marker.userHiddenBeforeStcs,
+              }) || changed;
+            }
+            continue;
+          }
+        }
+
+        if (!hidden) {
+          const hiddenChanged = setMessageHiddenFromMemory(message, true, i);
+          visibilityChanged = hiddenChanged || visibilityChanged;
+          changed = hiddenChanged || changed;
+        }
+        changed = syncMarkerBlockOwners(message, coveringBlockIds, {
+          userHiddenBeforeStcs: false,
+          restoredByUser: false,
+        }) || changed;
+        continue;
+      }
+
+      if (owned) {
+        if (hidden && !marker.userHiddenBeforeStcs) {
+          const hiddenChanged = setMessageHiddenFromMemory(message, false, i);
+          visibilityChanged = hiddenChanged || visibilityChanged;
+          changed = hiddenChanged || changed;
+        }
+        changed = clearStcsHiddenMarker(message) || changed;
+      }
+    }
+
+    changed = clearVisibilitySyncPending() || changed;
+    if (visibilityChanged) refreshMessageVisibilityUi();
+    const saved = changed ? await flushMetadataNow() : false;
+    traceAutoMode("visibility-sync:done", { reason, changed, saved });
+    renderStatus();
+    return { changed, saved, skipped: false };
+  } finally {
+    visibilitySyncInFlight = false;
+  }
+}
+
+function getVisibilityStatusWarnings() {
+  const state = getState();
+  const chat = getChatMessages();
+  const warnings = [];
+
+  const blocksWithUserHiddenMessages = getLockedBlocks()
+    .filter((block) => isRangeCheckpoint(block))
+    .filter((block) => chatRangeContainsHiddenFromMemoryMessage(block.startIndex, block.endIndex));
+  if (blocksWithUserHiddenMessages.length) {
+    warnings.push(`${blocksWithUserHiddenMessages.length} checkpoint(s) cover user-hidden messages.`);
+  }
+
+  const coverageByIndex = collectCoverageByMessageIndex(chat);
+  const keepVisibleStart = Math.max(0, chat.length - STCS_VISIBLE_TAIL_MESSAGES);
+  const orphanOwnedCount = chat.reduce((count, message, index) => {
+    const marker = getStcsHiddenMarker(message);
+    if (!marker?.owned || !isMessageHiddenFromMemory(message)) return count;
+    const covered = (coverageByIndex.get(index) ?? []).length > 0 && index < keepVisibleStart;
+    return covered ? count : count + 1;
+  }, 0);
+  if (orphanOwnedCount > 0) {
+    warnings.push(`${orphanOwnedCount} STCS-hidden message(s) are no longer covered by a checkpoint.`);
+  }
+
+  const pending = state.runtime?.visibilitySyncPending;
+  if (pending) {
+    warnings.push(`Visibility sync was postponed while generation was active (${pending.reason || "unknown"}).`);
+  }
+
+  return warnings;
 }
 
 function chatRangeContainsHiddenFromMemoryMessage(startIndex, endIndex) {
@@ -1081,7 +1431,7 @@ function chatRangeContainsHiddenFromMemoryMessage(startIndex, endIndex) {
   const end = Math.min(chat.length - 1, Number(endIndex));
   if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) return false;
   for (let i = start; i <= end; i++) {
-    if (isMessageHiddenFromMemory(chat[i])) return true;
+    if (isUserHiddenFromMemoryMessage(chat[i])) return true;
   }
   return false;
 }
@@ -1864,10 +2214,8 @@ function appendImportedBlocks(rawBlocks) {
   const memoryOnlyCount = normalized.filter((b) => !!b?.memoryOnly).length;
   state.blocks.push(...normalized);
   bumpBlocksRevision(state);
-  // keep debounced save for coalescing, but force immediate flush in callers
-  saveState();
+  saveState({ persist: false });
   renderStatus();
-  scheduleAutoModeRun();
   return { imported: normalized.length, memoryOnly: memoryOnlyCount };
 }
 
@@ -1893,8 +2241,11 @@ async function importCheckpoints() {
       toastr.warning("No valid checkpoints found in file.", MODULE_NAME);
       return;
     }
-    await flushMetadataNow();
+    const visibilityResult = await syncSummarizedMessageVisibility("import-checkpoints");
+    await (visibilityResult?.skipped ? Promise.resolve(false) : (visibilityResult?.saved ? Promise.resolve(true) : flushMetadataNow()));
     await runNoBrainMaintenanceCycle({ silent: true });
+    await flushMetadataNow();
+    scheduleAutoModeRun();
     const memoryOnlySuffix = result.memoryOnly > 0 ? ` (${result.memoryOnly} set as memory-only)` : "";
     toastr.success(`Imported ${result.imported} checkpoint(s)${memoryOnlySuffix}.`, MODULE_NAME);
   } catch (error) {
@@ -1918,8 +2269,11 @@ async function importCurrentSummary() {
       toastr.warning("No valid summary content found in file.", MODULE_NAME);
       return;
     }
-    await flushMetadataNow();
+    const visibilityResult = await syncSummarizedMessageVisibility("import-current-summary");
+    await (visibilityResult?.skipped ? Promise.resolve(false) : (visibilityResult?.saved ? Promise.resolve(true) : flushMetadataNow()));
     await runNoBrainMaintenanceCycle({ silent: true });
+    await flushMetadataNow();
+    scheduleAutoModeRun();
     const memoryOnlySuffix = result.memoryOnly > 0 ? ` (${result.memoryOnly} set as memory-only)` : "";
     toastr.success(`Imported ${result.imported} checkpoint(s) from current summary export${memoryOnlySuffix}.`, MODULE_NAME);
   } catch (error) {
@@ -1946,7 +2300,7 @@ function getBlockValidationWarnings(block) {
   const startHashNow = getMessageHash(chat[start]);
   const endHashNow = getMessageHash(chat[end]);
   if (rangeContainsHiddenFromMemoryMessage(block)) {
-    warnings.push("Checkpoint overlaps message(s) hidden from memory. Review summary/injection manually.");
+    warnings.push("Checkpoint overlaps user-hidden message(s). Review summary/injection manually.");
   }
   if (block.startHash && block.startHash !== startHashNow) {
     warnings.push("Start message hash mismatch. Range may have changed.");
@@ -2923,9 +3277,14 @@ async function lockDraftCheckpoint(options = {}) {
   state.draft.previousSummariesTokenCount = 0;
   state.draft.summary = "";
   state.draft.generatedAt = null;
-  saveState();
-  await flushMetadataNow();
+  saveState({ persist: false });
+  const visibilityResult = await syncSummarizedMessageVisibility(`lock:${block.id}`);
+  const saved = visibilityResult?.skipped ? false : (visibilityResult?.saved || await flushMetadataNow());
   renderStatus();
+  if (!saved) {
+    toastr.error(`Checkpoint ${block.id} was locked in memory, but save failed. Auto mode was not started.`, MODULE_NAME);
+    return false;
+  }
   traceAutoMode("lock:after-save", {
     blockId: block.id,
     start,
@@ -3050,6 +3409,7 @@ function applyNoBrainUiLock() {
   const allowIds = new Set([
     "stcs-enabled",
     "stcs-no-brain-mode",
+    "stcs-hide-summarized-messages",
     "stcs-connection-profile",
     "stcs-summary-compression-preset-inline",
     "stcs-summary-template",
@@ -3159,6 +3519,8 @@ function applyNoBrainUiLock() {
     el.disabled = shouldHideAndDisable;
     setControlHidden(el, shouldHideAndDisable);
   });
+
+  schedulePendingVisibilitySyncIfReady("ui-lock-refresh");
 }
 
 function normalizeByStep(value, min, step) {
@@ -3392,7 +3754,7 @@ function toggleBlockEditor(blockElement) {
   editor.style.display = editor.style.display === "none" ? "block" : "none";
 }
 
-function saveBlockEdits(blockElement) {
+async function saveBlockEdits(blockElement) {
   const blockId = blockElement?.dataset?.blockId;
   if (!blockId) return;
   const editor = blockElement.querySelector(".stcs-block-editor");
@@ -3405,8 +3767,13 @@ function saveBlockEdits(blockElement) {
   state.blocks[idx].summary = normalizeSummaryOutput(editor.value);
   state.blocks[idx].updatedAt = Date.now();
   bumpBlocksRevision(state);
-  saveState();
+  saveState({ persist: false });
+  const saved = await flushMetadataNow();
   renderStatus();
+  if (!saved) {
+    toastr.error(`Checkpoint ${blockId} edits were applied in memory, but save failed. Auto mode was not started.`, MODULE_NAME);
+    return;
+  }
   scheduleAutoModeRun();
   toastr.success(`Checkpoint ${blockId} saved.`, MODULE_NAME);
 }
@@ -3432,8 +3799,9 @@ async function deleteBlock(blockElement) {
       sourceTokens: Number(deletedBlock?.sourceTokenCount || 0),
     },
   });
-  saveState();
-  const saved = await flushMetadataNow();
+  saveState({ persist: false });
+  const visibilityResult = await syncSummarizedMessageVisibility(`delete:${blockId}`);
+  const saved = visibilityResult?.skipped ? false : (visibilityResult?.saved || await flushMetadataNow());
   renderStatus();
   if (!saved) {
     toastr.error(`Checkpoint ${blockId} was removed in memory, but metadata save failed. Auto mode was not started.`, MODULE_NAME);
@@ -3443,7 +3811,7 @@ async function deleteBlock(blockElement) {
   toastr.success(`Checkpoint ${blockId} deleted.`, MODULE_NAME);
 }
 
-function toggleBlockInjection(blockElement) {
+async function toggleBlockInjection(blockElement) {
   const blockId = blockElement?.dataset?.blockId;
   if (!blockId) return;
   const idx = getBlockIndexById(blockId);
@@ -3453,8 +3821,13 @@ function toggleBlockInjection(blockElement) {
   const block = state.blocks[idx];
   block.inject = block.inject === false ? true : false;
   bumpBlocksRevision(state);
-  saveState();
+  saveState({ persist: false });
+  const saved = await flushMetadataNow();
   renderStatus();
+  if (!saved) {
+    toastr.error(`Checkpoint ${blockId} injection setting changed in memory, but save failed. Auto mode was not started.`, MODULE_NAME);
+    return;
+  }
   scheduleAutoModeRun();
 }
 
@@ -3567,7 +3940,11 @@ async function moveBlockToWorldbook(blockElement) {
     block.worldbookUpdatedAt = Date.now();
     block.updatedAt = Date.now();
     bumpBlocksRevision(state);
-    saveState();
+    saveState({ persist: false });
+    const visibilityResult = await syncSummarizedMessageVisibility(`worldbook:${blockId}`);
+    if (!visibilityResult?.skipped && !visibilityResult?.saved) {
+      await flushMetadataNow();
+    }
     renderStatus();
     toastr.success(`Checkpoint ${blockId} moved to Worldbook "${worldName}".`, MODULE_NAME);
   } catch (error) {
@@ -3629,7 +4006,11 @@ async function moveAggregateSummaryToWorldbook() {
     }
 
     bumpBlocksRevision(state);
-    saveState();
+    saveState({ persist: false });
+    const visibilityResult = await syncSummarizedMessageVisibility("worldbook:aggregate");
+    if (!visibilityResult?.skipped && !visibilityResult?.saved) {
+      await flushMetadataNow();
+    }
     renderStatus();
     toastr.success(`Aggregate summary moved to Worldbook "${worldName}".`, MODULE_NAME);
   } catch (error) {
@@ -3650,7 +4031,7 @@ function handleLockedListClick(event) {
     return;
   }
   if (target.closest(".stcs-action-save")) {
-    saveBlockEdits(blockElement);
+    void saveBlockEdits(blockElement);
     return;
   }
   if (target.closest(".stcs-action-delete")) {
@@ -3658,7 +4039,7 @@ function handleLockedListClick(event) {
     return;
   }
   if (target.closest(".stcs-action-toggle-inject")) {
-    toggleBlockInjection(blockElement);
+    void toggleBlockInjection(blockElement);
     return;
   }
   if (target.closest(".stcs-action-move-worldbook")) {
@@ -3731,6 +4112,7 @@ function renderStatus() {
     setAutoModeUiLock(false);
   }
   const statusEl = document.getElementById("stcs-status");
+  const visibilityWarningEl = document.getElementById("stcs-visibility-warning");
   const lockedListEl = document.getElementById("stcs-locked-list");
   const previewEl = document.getElementById("stcs-memory-preview");
   const enabledEl = document.getElementById("stcs-enabled");
@@ -3748,6 +4130,7 @@ function renderStatus() {
   const summaryCompressionPresetSubmenuEl = document.getElementById("stcs-summary-compression-preset-submenu");
   const useProfilePromptStackEl = document.getElementById("stcs-use-profile-prompt-stack");
   const useWorldbookInDraftEl = document.getElementById("stcs-use-worldbook-in-draft");
+  const hideSummarizedMessagesEl = document.getElementById("stcs-hide-summarized-messages");
   const calcMaxContextEl = document.getElementById("stcs-calc-max-context");
   const calcTitleEl = document.getElementById("stcs-calc-title");
   const calcDrawerEl = document.getElementById("stcs-calc-drawer");
@@ -3823,6 +4206,7 @@ function renderStatus() {
   }
   if (useProfilePromptStackEl) useProfilePromptStackEl.checked = !!state.settings.useProfilePromptStack;
   if (useWorldbookInDraftEl) useWorldbookInDraftEl.checked = !!state.settings.useWorldbookInDraft;
+  if (hideSummarizedMessagesEl) hideSummarizedMessagesEl.checked = !!state.settings.hideSummarizedMessages;
   if (calcMaxContextEl) calcMaxContextEl.value = String(state.settings.calculator.maxContextTokens);
   if (calcExpectedResponseEl) calcExpectedResponseEl.value = String(state.settings.calculator.expectedResponseTokens);
   if (calcLorebookEl) calcLorebookEl.value = String(state.settings.calculator.lorebookTokens);
@@ -3864,6 +4248,11 @@ function renderStatus() {
     waitingForBatch,
     extensionStatus,
   });
+  if (visibilityWarningEl instanceof HTMLElement) {
+    const visibilityWarnings = getVisibilityStatusWarnings();
+    visibilityWarningEl.textContent = visibilityWarnings.map((warning) => `Warning: ${warning}`).join("\n");
+    visibilityWarningEl.style.display = visibilityWarnings.length ? "" : "none";
+  }
 
   renderLockedBlocksList();
 
@@ -3931,6 +4320,9 @@ function renderStatus() {
   applyLocalizedTooltips();
   applyNoBrainUiLock();
   updateExtensionPrompt();
+  if (state.runtime?.visibilitySyncPending && !isVisibilitySyncBlocked()) {
+    schedulePendingVisibilitySync("render-status");
+  }
 }
 
 function bindUiEvents() {
@@ -3948,6 +4340,7 @@ function bindUiEvents() {
   const summaryCompressionPresetSubmenuEl = document.getElementById("stcs-summary-compression-preset-submenu");
   const useProfilePromptStackEl = document.getElementById("stcs-use-profile-prompt-stack");
   const useWorldbookInDraftEl = document.getElementById("stcs-use-worldbook-in-draft");
+  const hideSummarizedMessagesEl = document.getElementById("stcs-hide-summarized-messages");
   const calcMaxContextEl = document.getElementById("stcs-calc-max-context");
   const calcExpectedResponseEl = document.getElementById("stcs-calc-expected-response");
   const calcLorebookEl = document.getElementById("stcs-calc-lorebook");
@@ -4097,6 +4490,17 @@ function bindUiEvents() {
     const state = getState();
     state.settings.useWorldbookInDraft = !!useWorldbookInDraftEl.checked;
     saveState();
+    renderStatus();
+  });
+  hideSummarizedMessagesEl?.addEventListener("change", () => {
+    const state = getState();
+    state.settings.hideSummarizedMessages = !!hideSummarizedMessagesEl.checked;
+    saveState({ persist: false });
+    void syncSummarizedMessageVisibility("setting-hide-summarized-messages").then((result) => {
+      if (!result?.skipped) {
+        scheduleAutoModeRun();
+      }
+    });
     renderStatus();
   });
   connectionProfileEl?.addEventListener("click", () => {

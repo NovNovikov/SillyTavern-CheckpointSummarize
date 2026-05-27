@@ -245,11 +245,13 @@ function bumpBlocksRevision(state = null) {
 
 async function flushMetadataNow() {
   const ctx = getContext();
-  if (!ctx || typeof ctx.saveMetadata !== "function") return;
+  if (!ctx || typeof ctx.saveMetadata !== "function") return false;
   try {
     await ctx.saveMetadata();
+    return true;
   } catch (error) {
     console.warn(`[${MODULE_NAME}] Immediate metadata save failed`, error);
+    return false;
   }
 }
 
@@ -967,7 +969,7 @@ async function runAutoMode() {
       cancelPendingMetadataSave("before-auto-generate");
       const draftGenerated = await generateDraftCheckpoint({
         skipPostNoBrainMaintenance: true,
-        persistDraft: !loopAutoDrainMode,
+        persistDraft: false,
       });
       if (!isCurrentAutoRun()) break;
 
@@ -3409,7 +3411,7 @@ function saveBlockEdits(blockElement) {
   toastr.success(`Checkpoint ${blockId} saved.`, MODULE_NAME);
 }
 
-function deleteBlock(blockElement) {
+async function deleteBlock(blockElement) {
   const blockId = blockElement?.dataset?.blockId;
   if (!blockId) return;
   const idx = getBlockIndexById(blockId);
@@ -3431,7 +3433,12 @@ function deleteBlock(blockElement) {
     },
   });
   saveState();
+  const saved = await flushMetadataNow();
   renderStatus();
+  if (!saved) {
+    toastr.error(`Checkpoint ${blockId} was removed in memory, but metadata save failed. Auto mode was not started.`, MODULE_NAME);
+    return;
+  }
   scheduleAutoModeRun();
   toastr.success(`Checkpoint ${blockId} deleted.`, MODULE_NAME);
 }
@@ -3647,7 +3654,7 @@ function handleLockedListClick(event) {
     return;
   }
   if (target.closest(".stcs-action-delete")) {
-    deleteBlock(blockElement);
+    void deleteBlock(blockElement);
     return;
   }
   if (target.closest(".stcs-action-toggle-inject")) {

@@ -3833,12 +3833,7 @@ function renderStatus() {
     draftSummaryEl.value = state.draft.summary ?? "";
   }
   if (summarizeTailNowBtn instanceof HTMLButtonElement) {
-    const showTailButton = !!state.settings.noBrainModeEnabled
-      && !!firstGap
-      && !firstGap.hasCoveredContentAfter
-      && firstGapTokens > 0
-      && firstGapTokens < targetTokens;
-    summarizeTailNowBtn.style.display = showTailButton ? "" : "none";
+    summarizeTailNowBtn.style.display = state.settings.noBrainModeEnabled ? "" : "none";
     summarizeTailNowBtn.disabled = !tailSummaryEligibility.eligible;
     summarizeTailNowBtn.title = tailSummaryEligibility.eligible
       ? `Generate and lock a checkpoint from tail ${firstGapLabel} (${firstGapTokens}/${targetTokens} tokens)`

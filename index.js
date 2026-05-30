@@ -1,5 +1,5 @@
 import { cancelDebouncedMetadataSave, getContext, saveMetadataDebounced } from "../../../extensions.js";
-import { activateSendButtons, deactivateSendButtons, eventSource, event_types, extension_prompt_roles, extension_prompt_types, getMaxContextSize, generateRaw, generateQuietPrompt, is_send_press, isGenerating } from "../../../../script.js";
+import { activateSendButtons, deactivateSendButtons, eventSource, event_types, extension_prompt_roles, extension_prompt_types, getMaxContextSize, generateRaw, generateQuietPrompt, is_send_press, isGenerating, saveChatConditional } from "../../../../script.js";
 import { promptManager } from "../../../openai.js";
 import { itemizedPrompts, itemizedParams } from "../../../itemized-prompts.js";
 import {
@@ -27,6 +27,31 @@ const STCS_HIDDEN_MARKER_VERSION = 1;
 const STCS_VISIBLE_TAIL_MESSAGES = 5;
 
 const DEFAULT_SUMMARY_PROMPT_TEMPLATE = `You are maintaining a long-term modular memory for a roleplay/chat.
+
+Previous locked checkpoint summaries:
+{{previous_summaries}}
+
+Current raw chat block:
+{{raw_block}}
+
+Task:
+Create a compact, information-dense summary ONLY for the current raw chat block.
+
+Use the previous checkpoint summaries only to understand continuity, causality, character relationships, promises, secrets, unresolved plotlines, and world state.
+
+Do NOT rewrite previous summaries.
+Do NOT create a global summary.
+Do NOT create a summary of summaries.
+Do NOT repeat old facts unless they are necessary to explain what changed in the current block.
+Only summarize what happened in the current raw block starting from the beginning of the block till the end.
+
+Target length:
+approximately {{target_summary_words}} words.
+
+Output only the checkpoint summary.
+No commentary.`;
+
+const PREVIOUS_DEFAULT_SUMMARY_PROMPT_TEMPLATE = `You are maintaining a long-term modular memory for a roleplay/chat.
 
 Previous locked checkpoint summaries:
 {{previous_summaries}}
@@ -128,6 +153,9 @@ const DEFAULT_STATE = {
     sourceTokenCount: 0,
     previousSummariesTokenCount: 0,
     summary: "",
+    rawPrompt: "",
+    rawPromptTokens: 0,
+    rawPromptMode: "",
     generatedAt: null,
   },
   runtime: {
@@ -192,8 +220,11 @@ function ensureState() {
   state.settings.summaryPromptTemplate ??= DEFAULT_STATE.settings.summaryPromptTemplate;
   if (typeof state.settings.summaryPromptTemplate === "string") {
     const currentTemplate = state.settings.summaryPromptTemplate.trim();
-    const legacyTemplate = LEGACY_DEFAULT_SUMMARY_PROMPT_TEMPLATE.trim();
-    if (currentTemplate === legacyTemplate) {
+    const legacyTemplates = [
+      LEGACY_DEFAULT_SUMMARY_PROMPT_TEMPLATE,
+      PREVIOUS_DEFAULT_SUMMARY_PROMPT_TEMPLATE,
+    ].map((template) => template.trim());
+    if (legacyTemplates.includes(currentTemplate)) {
       state.settings.summaryPromptTemplate = DEFAULT_SUMMARY_PROMPT_TEMPLATE;
       saveState();
     }
@@ -205,6 +236,9 @@ function ensureState() {
   state.draft.sourceTokenCount ??= 0;
   state.draft.previousSummariesTokenCount ??= 0;
   state.draft.summary ??= "";
+  state.draft.rawPrompt ??= "";
+  state.draft.rawPromptTokens ??= 0;
+  state.draft.rawPromptMode ??= "";
   state.draft.generatedAt ??= null;
   state.runtime ??= structuredClone(DEFAULT_STATE.runtime);
   state.runtime.blocksRevision ??= 0;
@@ -258,6 +292,21 @@ async function flushMetadataNow() {
     console.warn(`[${MODULE_NAME}] Immediate metadata save failed`, error);
     return false;
   }
+}
+
+async function flushChatAndMetadataNow() {
+  try {
+    cancelPendingMetadataSave("chat-save");
+    if (typeof saveChatConditional === "function") {
+      await saveChatConditional();
+      return true;
+    }
+  } catch (error) {
+    console.warn(`[${MODULE_NAME}] Immediate chat save failed`, error);
+    return false;
+  }
+
+  return flushMetadataNow();
 }
 
 function getPromptManagerOrderCharacter() {
@@ -605,6 +654,7 @@ function traceAutoMode(point, extra = {}) {
       draftHasSummary: hasVisibleText(state.draft?.summary ?? ""),
       targetRawBlockTokens: Number(state.settings?.targetRawBlockTokens || 0),
       effectiveTargetRawBlockTokens: getEffectiveRawBlockTargetTokens(state),
+      rawBlockLimitTokens: firstGap ? getRawBlockLimitInfo(state, Number(firstGap.start)).rawBlockLimit : null,
       autoModeEnabled: !!state.settings?.autoModeEnabled,
       autoApproveEnabled: !!state.settings?.autoApproveEnabled,
       noBrainModeEnabled: !!state.settings?.noBrainModeEnabled,
@@ -701,7 +751,9 @@ function applyLocalizedTooltips() {
   setTitle(".stcs-action-delete", "Удалить чекпоинт и открыть его диапазон как несуммаризованный");
   setTitle(".stcs-action-toggle-inject", "Включить или выключить инъекцию этого чекпоинта в память");
   setTitle(".stcs-action-move-worldbook", "Перенести саммари чекпоинта в Worldbook и выключить его прямую инъекцию");
+  setTitle(".stcs-action-view-raw-prompt", "Показать или скрыть raw prompt, сохраненный при генерации этого чекпоинта");
   setTitle(".stcs-block-editor", "Редактируемый полный текст саммари этого чекпоинта");
+  setTitle(".stcs-block-raw-prompt", "Raw prompt, сохраненный при генерации этого чекпоинта");
 }
 
 function isTavernGenerationActive() {
@@ -819,6 +871,7 @@ async function runAutoMode() {
         state.draft.previousSummariesTokenCount = 0;
         state.draft.summary = "";
         state.draft.generatedAt = null;
+        clearDraftRawPrompt(state.draft);
         saveState({ persist: false });
         renderStatus();
         setAutoModeRangeDebugInfo("stale draft cleared (invalid/placeholder/0-0 range)");
@@ -866,7 +919,8 @@ async function runAutoMode() {
   const gapEnd = Number(firstGap.end);
   const isMiddleGap = !!firstGap.hasCoveredContentAfter;
   const unsummarizedTokens = calculateMessageRangeTokens(startIndex, gapEnd);
-  const targetTokens = getEffectiveRawBlockTargetTokens(state);
+  const firstGapBudgetInfo = getRawBlockLimitInfo(state, startIndex);
+  const targetTokens = firstGapBudgetInfo.rawBlockLimit;
   traceAutoMode("run:first-gap", {
     autoRunId,
     startIndex,
@@ -874,7 +928,22 @@ async function runAutoMode() {
     isMiddleGap,
     unsummarizedTokens,
     targetTokens,
+    minimumLimit: firstGapBudgetInfo.minimumLimit,
+    availableContext: firstGapBudgetInfo.availableContext,
   });
+  if (state.settings.noBrainModeEnabled && firstGapBudgetInfo.belowMinimum) {
+    const message = formatRawBlockLimitTooLow(firstGapBudgetInfo);
+    setAutoModeRangeDebugInfo(message);
+    setExtensionStatusError(message);
+    traceAutoMode("run:first-gap-raw-limit-too-low", {
+      autoRunId,
+      startIndex,
+      gapEnd,
+      targetTokens,
+      minimumLimit: firstGapBudgetInfo.minimumLimit,
+    });
+    return;
+  }
   if (!isMiddleGap && unsummarizedTokens < targetTokens) {
     autoSelectNextRangeForAutoMode("run-first-gap-below-target");
     traceAutoMode("run:first-gap-below-target", {
@@ -911,7 +980,8 @@ async function runAutoMode() {
       const loopGapEnd = Number(loopGap.end);
       const loopIsMiddleGap = !!loopGap.hasCoveredContentAfter;
       const loopUnsummarizedTokens = calculateMessageRangeTokens(loopStartIndex, loopGapEnd);
-      const loopTargetTokens = getEffectiveRawBlockTargetTokens(loopState);
+      const loopBudgetInfo = getRawBlockLimitInfo(loopState, loopStartIndex);
+      const loopTargetTokens = loopBudgetInfo.rawBlockLimit;
       traceAutoMode("run:loop-gap", {
         autoRunId,
         safetyCycles,
@@ -920,7 +990,23 @@ async function runAutoMode() {
         loopIsMiddleGap,
         loopUnsummarizedTokens,
         loopTargetTokens,
+        minimumLimit: loopBudgetInfo.minimumLimit,
+        availableContext: loopBudgetInfo.availableContext,
       });
+      if (loopState.settings.noBrainModeEnabled && loopBudgetInfo.belowMinimum) {
+        const message = formatRawBlockLimitTooLow(loopBudgetInfo);
+        setAutoModeRangeDebugInfo(message);
+        setExtensionStatusError(message);
+        traceAutoMode("run:loop-raw-limit-too-low", {
+          autoRunId,
+          safetyCycles,
+          loopStartIndex,
+          loopGapEnd,
+          loopTargetTokens,
+          minimumLimit: loopBudgetInfo.minimumLimit,
+        });
+        break;
+      }
       if (!loopIsMiddleGap && loopUnsummarizedTokens < loopTargetTokens) {
         autoSelectNextRangeForAutoMode("run-loop-gap-below-target");
         traceAutoMode("run:loop-gap-below-target", {
@@ -1010,6 +1096,7 @@ async function runAutoMode() {
         // Drop stale draft and regenerate against fresh memory state.
         nextState.draft.summary = "";
         nextState.draft.generatedAt = null;
+        clearDraftRawPrompt(nextState.draft);
         saveState({ persist: false });
         renderStatus();
         safetyCycles += 1;
@@ -1100,11 +1187,37 @@ function isMessageHiddenFromMemory(message) {
   return !!message?.is_system || !!message?.extra?.[MEMORY_IGNORE_SYMBOL];
 }
 
+function isMessageIgnoredForGeneration(message) {
+  return !!message?.extra?.[MEMORY_IGNORE_SYMBOL];
+}
+
+function setMessageIgnoredForGeneration(message, ignored) {
+  if (!message || typeof message !== "object") return false;
+  const nextIgnored = !!ignored;
+  const currentlyIgnored = isMessageIgnoredForGeneration(message);
+  if (currentlyIgnored === nextIgnored) return false;
+
+  if (nextIgnored) {
+    const extra = ensureMessageExtra(message);
+    if (!extra) return false;
+    extra[MEMORY_IGNORE_SYMBOL] = true;
+    return true;
+  }
+
+  if (message.extra && typeof message.extra === "object") {
+    delete message.extra[MEMORY_IGNORE_SYMBOL];
+    return true;
+  }
+
+  return false;
+}
+
 function setMessageHiddenFromMemory(message, hidden, index = null) {
   if (!message || typeof message !== "object") return false;
   const nextHidden = !!hidden;
   const changed = !!message.is_system !== nextHidden;
   message.is_system = nextHidden;
+  const ignoreChanged = setMessageIgnoredForGeneration(message, nextHidden);
 
   const messageIndex = Number(index);
   if (Number.isInteger(messageIndex) && typeof $ === "function") {
@@ -1114,7 +1227,7 @@ function setMessageHiddenFromMemory(message, hidden, index = null) {
     }
   }
 
-  return changed;
+  return changed || ignoreChanged;
 }
 
 function refreshMessageVisibilityUi() {
@@ -1196,13 +1309,18 @@ function isUserHiddenFromMemoryMessage(message) {
   return isMessageHiddenFromMemory(message) && !hasStcsHiddenMarker(message);
 }
 
+function reconcileOwnedPromptIgnoreFlag(message, shouldIgnore) {
+  if (!hasStcsHiddenMarker(message)) return false;
+  return setMessageIgnoredForGeneration(message, shouldIgnore);
+}
+
 function isValidCoverageCheckpoint(block, chat = getChatMessages()) {
   if (!isRangeCheckpoint(block)) return false;
   const start = Number(block.startIndex);
   const end = Number(block.endIndex);
   if (start >= chat.length || end >= chat.length) return false;
-  if (block.startHash && chat[start] && block.startHash !== getMessageHash(chat[start])) return false;
-  if (block.endHash && chat[end] && block.endHash !== getMessageHash(chat[end])) return false;
+  if (chat[start] && !messageHashMatches(block.startHash, chat[start])) return false;
+  if (chat[end] && !messageHashMatches(block.endHash, chat[end])) return false;
   return true;
 }
 
@@ -1228,6 +1346,38 @@ function collectCoverageByMessageIndex(chat = getChatMessages()) {
 
 function collectCoveredMessageIndexes() {
   return new Set(collectCoverageByMessageIndex().keys());
+}
+
+function syncStcsPromptIgnoreFlagsForGeneration(reason = "") {
+  const state = getState();
+  const chat = getChatMessages();
+  if (!chat.length) return false;
+
+  const coverageByIndex = state.settings.hideSummarizedMessages
+    ? collectCoverageByMessageIndex(chat)
+    : new Map();
+  const keepVisibleStart = Math.max(0, chat.length - STCS_VISIBLE_TAIL_MESSAGES);
+  let changed = false;
+
+  for (let i = 0; i < chat.length; i++) {
+    const message = chat[i];
+    const marker = getStcsHiddenMarker(message);
+    if (marker?.owned !== true) continue;
+
+    const covered = (coverageByIndex.get(i) ?? []).length > 0 && i < keepVisibleStart;
+    const shouldIgnore = !!(
+      state.settings.hideSummarizedMessages
+      && covered
+      && message.is_system
+      && !marker.restoredByUser
+    );
+    changed = setMessageIgnoredForGeneration(message, shouldIgnore) || changed;
+  }
+
+  if (changed) {
+    traceAutoMode("visibility-sync:prompt-ignore", { reason });
+  }
+  return changed;
 }
 
 function isVisibilitySyncBlocked() {
@@ -1293,7 +1443,7 @@ async function syncSummarizedMessageVisibility(reason = "") {
 
   if (!chat.length) {
     const changed = clearVisibilitySyncPending();
-    const saved = changed ? await flushMetadataNow() : false;
+    const saved = changed ? await flushChatAndMetadataNow() : false;
     renderStatus();
     return { changed, saved, skipped: false };
   }
@@ -1314,6 +1464,7 @@ async function syncSummarizedMessageVisibility(reason = "") {
         const marker = getStcsHiddenMarker(message);
         if (!marker?.owned) continue;
 
+        visibilityChanged = reconcileOwnedPromptIgnoreFlag(message, false) || visibilityChanged;
         if (isMessageHiddenFromMemory(message) && !marker.userHiddenBeforeStcs) {
           const hiddenChanged = setMessageHiddenFromMemory(message, false, i);
           visibilityChanged = hiddenChanged || visibilityChanged;
@@ -1324,7 +1475,7 @@ async function syncSummarizedMessageVisibility(reason = "") {
 
       changed = clearVisibilitySyncPending() || changed;
       if (visibilityChanged) refreshMessageVisibilityUi();
-      const saved = changed ? await flushMetadataNow() : false;
+      const saved = changed ? await flushChatAndMetadataNow() : false;
       traceAutoMode("visibility-sync:disabled", { reason, changed, saved });
       renderStatus();
       return { changed, saved, skipped: false };
@@ -1337,6 +1488,9 @@ async function syncSummarizedMessageVisibility(reason = "") {
       const message = chat[i];
       const marker = getStcsHiddenMarker(message);
       const owned = marker?.owned === true;
+      if (owned && !message.is_system && isMessageIgnoredForGeneration(message)) {
+        visibilityChanged = setMessageIgnoredForGeneration(message, false) || visibilityChanged;
+      }
       const hidden = isMessageHiddenFromMemory(message);
       const coveringBlockIds = normalizeBlockIdList(coverageByIndex.get(i) ?? []);
       const shouldHide = coveringBlockIds.length > 0 && i < keepVisibleStart;
@@ -1364,6 +1518,8 @@ async function syncSummarizedMessageVisibility(reason = "") {
           const hiddenChanged = setMessageHiddenFromMemory(message, true, i);
           visibilityChanged = hiddenChanged || visibilityChanged;
           changed = hiddenChanged || changed;
+        } else if (owned && message.is_system) {
+          visibilityChanged = reconcileOwnedPromptIgnoreFlag(message, true) || visibilityChanged;
         }
         changed = syncMarkerBlockOwners(message, coveringBlockIds, {
           userHiddenBeforeStcs: false,
@@ -1373,6 +1529,7 @@ async function syncSummarizedMessageVisibility(reason = "") {
       }
 
       if (owned) {
+        visibilityChanged = reconcileOwnedPromptIgnoreFlag(message, false) || visibilityChanged;
         if (hidden && !marker.userHiddenBeforeStcs) {
           const hiddenChanged = setMessageHiddenFromMemory(message, false, i);
           visibilityChanged = hiddenChanged || visibilityChanged;
@@ -1384,7 +1541,7 @@ async function syncSummarizedMessageVisibility(reason = "") {
 
     changed = clearVisibilitySyncPending() || changed;
     if (visibilityChanged) refreshMessageVisibilityUi();
-    const saved = changed ? await flushMetadataNow() : false;
+    const saved = changed ? await flushChatAndMetadataNow() : false;
     traceAutoMode("visibility-sync:done", { reason, changed, saved });
     renderStatus();
     return { changed, saved, skipped: false };
@@ -1520,6 +1677,21 @@ function parseDraftIndex(value) {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isInteger(n) ? n : null;
+}
+
+function clearDraftRawPrompt(draft = getState().draft) {
+  if (!draft || typeof draft !== "object") return;
+  draft.rawPrompt = "";
+  draft.rawPromptTokens = 0;
+  draft.rawPromptMode = "";
+}
+
+function captureDraftRawPrompt(draft, prompt, mode) {
+  if (!draft || typeof draft !== "object") return;
+  const rawPrompt = String(prompt ?? "");
+  draft.rawPrompt = rawPrompt;
+  draft.rawPromptTokens = rawPrompt ? countTokens(rawPrompt) : 0;
+  draft.rawPromptMode = String(mode ?? "");
 }
 
 function getDraftRange(draft) {
@@ -1697,6 +1869,12 @@ function getMessageChunk(index, message) {
   return `[${index}] (${role}${name ? `/${name}` : ""}) ${text}`;
 }
 
+function getMessageStableHashRole(message) {
+  if (typeof message?.role === "string" && message.role) return message.role;
+  if (message?.is_user) return "user";
+  return "assistant";
+}
+
 function normalizeSummaryOutput(value) {
   let text = String(value ?? "");
   // Remove common hidden/control chars that can make output look empty in UI.
@@ -1761,8 +1939,19 @@ function simpleHash(input) {
 }
 
 function getMessageHash(message) {
+  const identity = `${getMessageStableHashRole(message)}|${String(message?.name ?? "")}|${getMessageText(message)}`;
+  return simpleHash(identity);
+}
+
+function getLegacyMessageHash(message) {
   const identity = `${getMessageRole(message)}|${String(message?.name ?? "")}|${getMessageText(message)}`;
   return simpleHash(identity);
+}
+
+function messageHashMatches(storedHash, message) {
+  const expected = String(storedHash ?? "");
+  if (!expected) return true;
+  return expected === getMessageHash(message) || expected === getLegacyMessageHash(message);
 }
 
 function getRangeMessageEntries(startIndex, endIndex, options = {}) {
@@ -2048,6 +2237,9 @@ function normalizeImportedBlock(raw, existingIds) {
   const sourceTokenCount = Number(raw?.sourceTokenCount ?? 0);
   const previousSummariesTokenCount = Number(raw?.previousSummariesTokenCount ?? 0);
   const targetSummaryTokens = Number(raw?.targetSummaryTokens ?? 0);
+  const rawPrompt = String(raw?.rawPrompt ?? "");
+  const rawPromptTokens = Number(raw?.rawPromptTokens ?? (rawPrompt ? countTokens(rawPrompt) : 0));
+  const rawPromptMode = String(raw?.rawPromptMode ?? "");
   const locked = raw?.locked !== false;
   const inject = raw?.inject !== false;
   const createdAt = Number(raw?.createdAt);
@@ -2063,10 +2255,10 @@ function normalizeImportedBlock(raw, existingIds) {
     if (!hasRange || endIndex >= chat.length) {
       memoryOnly = true;
     } else {
-      if (importStartHash && importStartHash !== getMessageHash(chat[startIndex])) {
+      if (importStartHash && !messageHashMatches(importStartHash, chat[startIndex])) {
         memoryOnly = true;
       }
-      if (!memoryOnly && importEndHash && importEndHash !== getMessageHash(chat[endIndex])) {
+      if (!memoryOnly && importEndHash && !messageHashMatches(importEndHash, chat[endIndex])) {
         memoryOnly = true;
       }
     }
@@ -2089,6 +2281,9 @@ function normalizeImportedBlock(raw, existingIds) {
     previousSummariesTokenCount: Number.isFinite(previousSummariesTokenCount) ? previousSummariesTokenCount : 0,
     targetSummaryTokens: Number.isFinite(targetSummaryTokens) ? targetSummaryTokens : 0,
     summary,
+    rawPrompt,
+    rawPromptTokens: Number.isFinite(rawPromptTokens) ? rawPromptTokens : 0,
+    rawPromptMode,
     locked,
     inject,
     memoryOnly,
@@ -2297,15 +2492,13 @@ function getBlockValidationWarnings(block) {
     return warnings;
   }
 
-  const startHashNow = getMessageHash(chat[start]);
-  const endHashNow = getMessageHash(chat[end]);
   if (rangeContainsHiddenFromMemoryMessage(block)) {
     warnings.push("Checkpoint overlaps user-hidden message(s). Review summary/injection manually.");
   }
-  if (block.startHash && block.startHash !== startHashNow) {
+  if (block.startHash && !messageHashMatches(block.startHash, chat[start])) {
     warnings.push("Start message hash mismatch. Range may have changed.");
   }
-  if (block.endHash && block.endHash !== endHashNow) {
+  if (block.endHash && !messageHashMatches(block.endHash, chat[end])) {
     warnings.push("End message hash mismatch. Range may have changed.");
   }
 
@@ -2327,6 +2520,12 @@ function renderLockedBlocksList() {
     const warnings = getBlockValidationWarnings(block);
     const preview = String(block.summary ?? "").trim().slice(0, 220);
     const summaryTokens = countTokens(String(block.summary ?? ""));
+    const rawPrompt = String(block.rawPrompt ?? "");
+    const rawPromptTokens = Number(block.rawPromptTokens || (rawPrompt ? countTokens(rawPrompt) : 0));
+    const rawPromptMode = String(block.rawPromptMode ?? "").trim();
+    const rawPromptInfo = rawPrompt
+      ? ` | Raw prompt tokens(est): ${rawPromptTokens}${rawPromptMode ? ` | Raw prompt mode: ${escapeHtml(rawPromptMode)}` : ""}`
+      : "";
     const warningHtml = warnings.length
       ? `<div class="stcs-warn">${warnings.map((w) => `Warning: ${escapeHtml(w)}`).join("<br>")}</div>`
       : "";
@@ -2353,7 +2552,7 @@ function renderLockedBlocksList() {
     return `
       <div class="stcs-block" data-block-id="${escapeHtml(block.id)}">
         <div><b>${checkpointTitle}</b></div>
-        <div>Range: ${rangeLabel} | Messages: ${block.messageCount ?? "n/a"} | Source tokens(est): ${block.sourceTokenCount ?? "n/a"} | Summary tokens(est): ${summaryTokens}</div>
+        <div>Range: ${rangeLabel} | Messages: ${block.messageCount ?? "n/a"} | Source tokens(est): ${block.sourceTokenCount ?? "n/a"} | Summary tokens(est): ${summaryTokens}${rawPromptInfo}</div>
         <div>Created: ${escapeHtml(formatTimestamp(block.createdAt))} | Updated: ${escapeHtml(updatedText)} | Status: ${escapeHtml(status)} | Inject: ${injectEnabled ? "on" : "off"}</div>
         ${worldbookRef}
         ${aggregateWorldbookRef}
@@ -2365,8 +2564,10 @@ function renderLockedBlocksList() {
           <button class="menu_button stcs-action-delete" title="Delete this checkpoint and reopen its range as unsummarized">Delete checkpoint</button>
           <button class="menu_button stcs-action-toggle-inject" title="${injectEnabled ? "Exclude this checkpoint from prompt injection" : "Include this checkpoint in prompt injection"}">${injectEnabled ? "Disable injection" : "Enable injection"}</button>
           <button class="menu_button stcs-action-move-worldbook" title="Create or update a Worldbook entry from this checkpoint summary">${worldbookButtonText}</button>
+          <button class="menu_button stcs-action-view-raw-prompt" data-has-raw-prompt="${rawPrompt ? "true" : "false"}" title="Open or hide the raw prompt saved for this checkpoint" ${rawPrompt ? "" : "disabled"}>View raw prompt</button>
         </div>
         <textarea class="text_pole stcs-block-editor" rows="8" style="display:none;" title="Editable full summary text for this checkpoint">${escapeHtml(block.summary ?? "")}</textarea>
+        <textarea class="text_pole stcs-block-raw-prompt" rows="14" readonly style="display:none;" title="Raw prompt saved when this checkpoint summary was generated">${escapeHtml(rawPrompt || "(no raw prompt saved for this checkpoint)")}</textarea>
       </div>
     `;
   }).join("\n");
@@ -2463,9 +2664,9 @@ function calculateContextBudget() {
   };
 }
 
-function getCheckpointContextBudgetBase() {
-  const state = getState();
-  const calc = state.settings.calculator ?? DEFAULT_STATE.settings.calculator;
+function getCheckpointContextBudgetBase(state = null) {
+  const s = state ?? getState();
+  const calc = s.settings.calculator ?? DEFAULT_STATE.settings.calculator;
 
   const fallbackMax = getMaxPromptTokensSafe();
   const maxContext = Number(calc.maxContextTokens || 0) > 0
@@ -2476,9 +2677,9 @@ function getCheckpointContextBudgetBase() {
   const lorebook = Number(calc.lorebookTokens || 0);
   const system = Number(calc.systemInstructionTokens || 0);
   const character = Number(calc.characterCardTokens || 0);
-  const fixedMandatory = state.settings.useProfilePromptStack
-    ? (expectedResponse + (state.settings.useWorldbookInDraft ? lorebook : 0) + system + character)
-    : (expectedResponse + (state.settings.useWorldbookInDraft ? lorebook : 0));
+  const fixedMandatory = s.settings.useProfilePromptStack
+    ? (expectedResponse + (s.settings.useWorldbookInDraft ? lorebook : 0) + system + character)
+    : (expectedResponse + (s.settings.useWorldbookInDraft ? lorebook : 0));
   const availableAfterMandatory = maxContext - fixedMandatory;
 
   return {
@@ -2802,6 +3003,7 @@ function clearDraftRangeSelection(state = null) {
   s.draft.sourceTokenCount = 0;
   s.draft.previousSummariesTokenCount = 0;
   s.draft.generatedAt = null;
+  clearDraftRawPrompt(s.draft);
 }
 
 function autoSelectNextRange(options = {}) {
@@ -2826,15 +3028,9 @@ function autoSelectNextRange(options = {}) {
   const startIndex = Number(firstGap.start);
   const gapEndIndex = Number(firstGap.end);
 
-  const previousSummariesText = state.settings.includeAllPreviousSummaries ? buildPreviousSummariesText(startIndex) : "";
-  const previousSummariesTokenCount = countTokens(previousSummariesText);
-  const summaryInstructionsTokens = countTokens(state.settings.summaryPromptTemplate || DEFAULT_SUMMARY_PROMPT_TEMPLATE);
-  const budgetBase = getCheckpointContextBudgetBase();
-  const availableContext = budgetBase.availableAfterMandatory
-    - previousSummariesTokenCount
-    - summaryInstructionsTokens
-    - Number(state.settings.targetSummaryTokens || 0)
-    - Number(state.settings.safetyMarginTokens || 0);
+  const budgetInfo = getRawBlockLimitInfo(state, startIndex);
+  const previousSummariesTokenCount = budgetInfo.previousSummariesTokenCount;
+  const availableContext = budgetInfo.availableContext;
   if (availableContext <= 0) {
     state.draft.startIndex = null;
     state.draft.endIndex = null;
@@ -2845,7 +3041,17 @@ function autoSelectNextRange(options = {}) {
     toastr.warning("No raw-block budget left after mandatory prompts. Reduce fixed prompt load.", MODULE_NAME);
     return;
   }
-  const rawBlockBudget = Math.max(1, Math.min(getEffectiveRawBlockTargetTokens(state), availableContext));
+  if (state.settings.noBrainModeEnabled && budgetInfo.belowMinimum) {
+    state.draft.startIndex = null;
+    state.draft.endIndex = null;
+    state.draft.sourceTokenCount = 0;
+    state.draft.previousSummariesTokenCount = previousSummariesTokenCount;
+    saveState({ persist });
+    renderStatus();
+    toastr.warning(formatRawBlockLimitTooLow(budgetInfo), MODULE_NAME);
+    return;
+  }
+  const rawBlockBudget = budgetInfo.rawBlockLimit;
 
   let sourceTokenCount = 0;
   let endIndex = startIndex;
@@ -2867,6 +3073,7 @@ function autoSelectNextRange(options = {}) {
   state.draft.previousSummariesTokenCount = previousSummariesTokenCount;
   state.draft.summary = "";
   state.draft.generatedAt = null;
+  clearDraftRawPrompt(state.draft);
   traceAutoMode("autoselect:selected", {
     firstGap,
     selectedStart: startIndex,
@@ -2899,7 +3106,24 @@ function autoSelectNextRangeForAutoMode(reason = "") {
   const gapEnd = Number(firstGap.end);
   const isMiddleGap = !!firstGap.hasCoveredContentAfter;
   const gapTokens = calculateMessageRangeTokens(startIndex, gapEnd);
-  const targetTokens = getEffectiveRawBlockTargetTokens(state);
+  const budgetInfo = getRawBlockLimitInfo(state, startIndex);
+  const targetTokens = budgetInfo.rawBlockLimit;
+
+  if (state.settings.noBrainModeEnabled && budgetInfo.belowMinimum) {
+    const message = formatRawBlockLimitTooLow(budgetInfo);
+    setAutoModeRangeDebugInfo(message);
+    setExtensionStatusError(message);
+    traceAutoMode("auto-select:raw-limit-too-low", {
+      reason,
+      startIndex,
+      gapEnd,
+      gapTokens,
+      targetTokens,
+      minimumLimit: budgetInfo.minimumLimit,
+      availableContext: budgetInfo.availableContext,
+    });
+    return false;
+  }
 
   if (!isMiddleGap && gapTokens < targetTokens) {
     const draftRange = getDraftRange(state.draft);
@@ -2986,6 +3210,7 @@ async function summarizeTailNow() {
     : 0;
   state.draft.summary = "";
   state.draft.generatedAt = null;
+  clearDraftRawPrompt(state.draft);
   saveState({ persist: false });
   renderStatus();
 
@@ -3072,6 +3297,7 @@ async function generateDraftCheckpoint(options = {}) {
     state.draft.previousSummariesTokenCount = 0;
     state.draft.summary = "";
     state.draft.generatedAt = null;
+    clearDraftRawPrompt(state.draft);
     saveState({ persist: persistDraft });
     renderStatus();
     toastr.warning("Range 0-0 is blocked. Use Autoselect next block to pick a valid range.", MODULE_NAME);
@@ -3092,6 +3318,8 @@ async function generateDraftCheckpoint(options = {}) {
     - generationTargetSummaryTokens;
   const draftRunId = ++draftGenerationRunSeq;
   const isCurrentDraftRun = () => activeDraftGenerationRunId === draftRunId;
+  let capturedRawPrompt = prompt;
+  let capturedRawPromptMode = state.settings.useProfilePromptStack ? "profile-quiet" : "raw";
 
   if (promptTokens > promptBudget) {
     toastr.warning(
@@ -3113,6 +3341,8 @@ async function generateDraftCheckpoint(options = {}) {
           if (state.settings.useWorldbookInDraft && !rawPrompt) {
             throw new Error(`Worldbook is enabled, but no readable World Info snapshot was found. WI diagnostics: ${getWorldInfoResolutionReason()}`);
           }
+        capturedRawPrompt = rawPrompt || prompt;
+        capturedRawPromptMode = rawPrompt ? "raw-with-worldbook" : "raw";
         const rawSummary = await generateRaw({
           prompt: rawPrompt || prompt,
         });
@@ -3130,6 +3360,8 @@ async function generateDraftCheckpoint(options = {}) {
         if (state.settings.useWorldbookInDraft && !rawPrompt) {
           throw new Error(`Worldbook is enabled, but no readable World Info snapshot was found. WI diagnostics: ${getWorldInfoResolutionReason()}`);
         }
+        capturedRawPrompt = rawPrompt || prompt;
+        capturedRawPromptMode = rawPrompt ? "profile-fallback-raw-with-worldbook" : "profile-fallback-raw";
         const rawSummary = await generateRaw({
           prompt: rawPrompt || prompt,
         });
@@ -3149,6 +3381,7 @@ async function generateDraftCheckpoint(options = {}) {
     writeState.draft.endIndex = end;
     writeState.draft.summary = normalizedSummary;
     writeState.draft.generatedAt = Date.now();
+    captureDraftRawPrompt(writeState.draft, capturedRawPrompt, capturedRawPromptMode);
     writeState.draft.sourceTokenCount = calculateMessageRangeTokens(start, end);
     writeState.draft.previousSummariesTokenCount = writeState.settings.includeAllPreviousSummaries
       ? countTokens(buildPreviousSummariesText(start))
@@ -3225,6 +3458,7 @@ async function lockDraftCheckpoint(options = {}) {
     state.draft.previousSummariesTokenCount = 0;
     state.draft.summary = "";
     state.draft.generatedAt = null;
+    clearDraftRawPrompt(state.draft);
     saveState();
     renderStatus();
     setAutoModeRangeDebugInfo(forbidZeroZero ? "0-0 draft dropped before auto-lock" : "0-0 draft dropped before lock");
@@ -3262,6 +3496,9 @@ async function lockDraftCheckpoint(options = {}) {
     previousSummariesTokenCount: state.draft.previousSummariesTokenCount || 0,
     targetSummaryTokens: resolveSummaryTargetTokens(targetSummaryTokens, state),
     summary,
+    rawPrompt: String(state.draft.rawPrompt ?? ""),
+    rawPromptTokens: Number(state.draft.rawPromptTokens || 0),
+    rawPromptMode: String(state.draft.rawPromptMode ?? ""),
     locked: true,
     inject: true,
     memoryOnly: false,
@@ -3277,6 +3514,7 @@ async function lockDraftCheckpoint(options = {}) {
   state.draft.previousSummariesTokenCount = 0;
   state.draft.summary = "";
   state.draft.generatedAt = null;
+  clearDraftRawPrompt(state.draft);
   saveState({ persist: false });
   const visibilityResult = await syncSummarizedMessageVisibility(`lock:${block.id}`);
   const saved = visibilityResult?.skipped ? false : (visibilityResult?.saved || await flushMetadataNow());
@@ -3301,6 +3539,7 @@ function clearDraft() {
   const state = getState();
   state.draft.summary = "";
   state.draft.generatedAt = null;
+  clearDraftRawPrompt(state.draft);
   saveState();
   renderStatus();
 }
@@ -3317,6 +3556,7 @@ const SUMMARY_MIN = 64;
 const RAW_BLOCK_STEP = 100;
 const RAW_BLOCK_MIN = 1000;
 const NO_BRAIN_MAX_RAW_BLOCK_TOKENS = 50000;
+const NO_BRAIN_MIN_RAW_BLOCK_TOKENS = 15000;
 const GEMMA4_TOKENS_PER_WORD = 1.35;
 
 function sanitizeSummaryCompressionPreset(value) {
@@ -3344,6 +3584,44 @@ function getEffectiveRawBlockTargetTokens(state) {
     return Math.min(base, NO_BRAIN_MAX_RAW_BLOCK_TOKENS);
   }
   return base;
+}
+
+function getRawBlockLimitInfo(state = null, startIndex = null) {
+  const s = state ?? getState();
+  const normalizedStartIndex = Number(startIndex);
+  const previousSummariesText = (
+    s.settings.includeAllPreviousSummaries
+    && Number.isInteger(normalizedStartIndex)
+    && normalizedStartIndex >= 0
+  )
+    ? buildPreviousSummariesText(normalizedStartIndex)
+    : "";
+  const previousSummariesTokenCount = countTokens(previousSummariesText);
+  const summaryInstructionsTokens = countTokens(s.settings.summaryPromptTemplate || DEFAULT_SUMMARY_PROMPT_TEMPLATE);
+  const budgetBase = getCheckpointContextBudgetBase(s);
+  const availableContext = budgetBase.availableAfterMandatory
+    - previousSummariesTokenCount
+    - summaryInstructionsTokens
+    - Number(s.settings.targetSummaryTokens || 0)
+    - Number(s.settings.safetyMarginTokens || 0);
+  const configuredLimit = getEffectiveRawBlockTargetTokens(s);
+  const rawBlockLimit = Math.max(0, Math.min(configuredLimit, availableContext));
+  const minimumLimit = s.settings.noBrainModeEnabled ? NO_BRAIN_MIN_RAW_BLOCK_TOKENS : RAW_BLOCK_MIN;
+
+  return {
+    configuredLimit,
+    rawBlockLimit,
+    minimumLimit,
+    belowMinimum: rawBlockLimit < minimumLimit,
+    availableContext,
+    previousSummariesTokenCount,
+    summaryInstructionsTokens,
+  };
+}
+
+function formatRawBlockLimitTooLow(info) {
+  const rawLimit = Math.floor(Number(info?.rawBlockLimit || 0));
+  return `raw block limit too low (${rawLimit}/${NO_BRAIN_MIN_RAW_BLOCK_TOKENS})`;
 }
 
 function applyNoBrainPreset(state) {
@@ -3460,19 +3738,21 @@ function applyNoBrainUiLock() {
       if (isCheckpointActionButton) {
         const isEditAction = el.classList.contains("stcs-action-view");
         const isInjectToggleAction = el.classList.contains("stcs-action-toggle-inject");
+        const isRawPromptAction = el.classList.contains("stcs-action-view-raw-prompt");
         const isSaveOrDeleteAction = !!(
           el.classList.contains("stcs-action-save")
           || el.classList.contains("stcs-action-delete")
         );
+        const hasRawPrompt = !isRawPromptAction || el.dataset.hasRawPrompt === "true";
         if (generationActive) {
           const generationLocked = !(isEditAction || isInjectToggleAction);
-          el.disabled = generationLocked;
+          el.disabled = generationLocked || !hasRawPrompt;
           const hideByNoBrain = noBrainOn && generationLocked;
           setControlHidden(el, hideByNoBrain);
           return;
         }
         const lockAndHide = isSaveOrDeleteAction && generationActive;
-        el.disabled = lockAndHide;
+        el.disabled = lockAndHide || !hasRawPrompt;
         setControlHidden(el, lockAndHide);
         return;
       }
@@ -3754,6 +4034,12 @@ function toggleBlockEditor(blockElement) {
   editor.style.display = editor.style.display === "none" ? "block" : "none";
 }
 
+function toggleBlockRawPrompt(blockElement) {
+  const rawPrompt = blockElement?.querySelector(".stcs-block-raw-prompt");
+  if (!(rawPrompt instanceof HTMLTextAreaElement)) return;
+  rawPrompt.style.display = rawPrompt.style.display === "none" ? "block" : "none";
+}
+
 async function saveBlockEdits(blockElement) {
   const blockId = blockElement?.dataset?.blockId;
   if (!blockId) return;
@@ -4030,6 +4316,10 @@ function handleLockedListClick(event) {
     toggleBlockEditor(blockElement);
     return;
   }
+  if (target.closest(".stcs-action-view-raw-prompt")) {
+    toggleBlockRawPrompt(blockElement);
+    return;
+  }
   if (target.closest(".stcs-action-save")) {
     void saveBlockEdits(blockElement);
     return;
@@ -4174,18 +4464,28 @@ function renderStatus() {
   const firstGapTokens = firstGap ? calculateMessageRangeTokens(Number(firstGap.start), Number(firstGap.end)) : 0;
   const autoModeEnabled = !!state.settings.autoModeEnabled;
   const inProgress = isExtensionGenerationActive();
-  const targetTokens = getEffectiveRawBlockTargetTokens(state);
+  const rawLimitInfo = firstGap
+    ? getRawBlockLimitInfo(state, Number(firstGap.start))
+    : getRawBlockLimitInfo(state);
+  const targetTokens = Math.floor(Number(rawLimitInfo.rawBlockLimit || 0));
   const hasAnyGap = !!firstGap;
+  const rawLimitTooLow = !!state.settings.noBrainModeEnabled
+    && autoModeEnabled
+    && hasAnyGap
+    && rawLimitInfo.belowMinimum;
   const waitingForBatch = autoModeEnabled
     && !!firstGap
     && !firstGap.hasCoveredContentAfter
+    && !rawLimitTooLow
     && firstGapTokens < targetTokens;
-  const noBrainWaiting = !!state.settings.noBrainModeEnabled && autoModeEnabled && hasAnyGap && !inProgress;
+  const noBrainWaiting = !!state.settings.noBrainModeEnabled && autoModeEnabled && hasAnyGap && !rawLimitTooLow && !inProgress;
   const extensionStatus = inProgress
     ? (draftGenerationInFlight ? "generating summary" : "updating checkpoints")
-    : (lastExtensionStatusError
+    : (rawLimitTooLow
+      ? `error: ${formatRawBlockLimitTooLow(rawLimitInfo)}`
+      : (lastExtensionStatusError
       ? `error: ${lastExtensionStatusError}`
-      : ((waitingForBatch || noBrainWaiting) ? "waiting" : "idle"));
+      : ((waitingForBatch || noBrainWaiting) ? "waiting" : "idle")));
   const tailSummaryEligibility = getTailSummaryEligibility();
 
   enabledEl.checked = !!state.enabled;
@@ -4227,7 +4527,7 @@ function renderStatus() {
     summarizeTailNowBtn.style.display = state.settings.noBrainModeEnabled ? "" : "none";
     summarizeTailNowBtn.disabled = !tailSummaryEligibility.eligible;
     summarizeTailNowBtn.title = tailSummaryEligibility.eligible
-      ? `Generate and lock a checkpoint from tail ${firstGapLabel} (${firstGapTokens}/${targetTokens} tokens)`
+      ? `Generate and lock a checkpoint from tail ${firstGapLabel} (${firstGapTokens}/${tailSummaryEligibility.targetTokens} tokens)`
       : `Cannot summarize tail now: ${tailSummaryEligibility.reason}`;
   }
 
@@ -4672,5 +4972,15 @@ jQuery(async () => {
   }
   if (event_types?.CHARACTER_MESSAGE_RENDERED) {
     eventSource?.on?.(event_types.CHARACTER_MESSAGE_RENDERED, refresh);
+  }
+  if (event_types?.GENERATION_STARTED) {
+    eventSource?.on?.(event_types.GENERATION_STARTED, () => {
+      syncStcsPromptIgnoreFlagsForGeneration("generation-started");
+    });
+  }
+  if (event_types?.GENERATION_AFTER_COMMANDS) {
+    eventSource?.on?.(event_types.GENERATION_AFTER_COMMANDS, () => {
+      syncStcsPromptIgnoreFlagsForGeneration("generation-after-commands");
+    });
   }
 });

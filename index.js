@@ -2,6 +2,7 @@ import { cancelDebouncedMetadataSave, getContext, saveMetadataDebounced } from "
 import { activateSendButtons, deactivateSendButtons, eventSource, event_types, extension_prompt_roles, extension_prompt_types, getMaxContextSize, generateRaw, generateQuietPrompt, is_send_press, isGenerating, saveChatConditional } from "../../../../script.js";
 import { promptManager } from "../../../openai.js";
 import { itemizedPrompts, itemizedParams } from "../../../itemized-prompts.js";
+import { getRegexedString, regex_placement } from "../../regex/engine.js";
 import {
   createNewWorldInfo,
   createWorldInfoEntry,
@@ -130,6 +131,7 @@ const DEFAULT_STATE = {
     useProfilePromptStack: true,
     useWorldbookInDraft: true,
     hideSummarizedMessages: false,
+    applyRegexToSummaryRawBlock: false,
     summaryCompressionPreset: "normal",
     calculator: {
       maxContextTokens: 98304,
@@ -202,6 +204,7 @@ function ensureState() {
   state.settings.useProfilePromptStack ??= DEFAULT_STATE.settings.useProfilePromptStack;
   state.settings.useWorldbookInDraft ??= DEFAULT_STATE.settings.useWorldbookInDraft;
   state.settings.hideSummarizedMessages ??= DEFAULT_STATE.settings.hideSummarizedMessages;
+  state.settings.applyRegexToSummaryRawBlock ??= DEFAULT_STATE.settings.applyRegexToSummaryRawBlock;
   state.settings.summaryCompressionPreset = sanitizeSummaryCompressionPreset(
     state.settings.summaryCompressionPreset ?? DEFAULT_STATE.settings.summaryCompressionPreset,
   );
@@ -704,6 +707,7 @@ function applyLocalizedTooltips() {
     "stcs-use-profile-prompt-stack": "Использовать полный стек промптов профиля подключения при генерации драфта",
     "stcs-use-worldbook-in-draft": "Использовать World Info при генерации драфта",
     "stcs-hide-summarized-messages": "Скрывать из памяти сообщения, уже покрытые чекпоинтами",
+    "stcs-apply-regex-summary-raw-block": "Применять Regex Alter Outgoing Prompt к сообщениям, попадающим в raw block саммари",
     "stcs-include-prev-summaries": "Передавать все предыдущие зафиксированные саммари как контекст",
     "stcs-auto-mode-enabled": "Автоматически генерировать саммари, когда несуммаризованный хвост достигает размера блока",
     "stcs-auto-approve-enabled": "Автоматически фиксировать сгенерированный драфт как чекпоинт",
@@ -1862,10 +1866,41 @@ function getMessageText(message) {
   return String(message?.mes ?? message?.message ?? message?.content ?? "");
 }
 
-function getMessageChunk(index, message) {
+function shouldApplyRegexToSummaryRawBlock(state = getState()) {
+  return !!state?.settings?.applyRegexToSummaryRawBlock;
+}
+
+function formatRawPromptMode(mode, state = getState()) {
+  const base = String(mode ?? "").trim() || "unknown";
+  return shouldApplyRegexToSummaryRawBlock(state) ? `${base}-regex` : base;
+}
+
+function getSummaryMessageText(index, message, options = {}) {
+  const { applyRegex = shouldApplyRegexToSummaryRawBlock(), depth = null } = options;
+  const text = getMessageText(message);
+  if (!applyRegex) return text;
+
+  try {
+    const placement = message?.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
+    const normalizedDepth = Number(depth);
+    return getRegexedString(text, placement, {
+      isPrompt: true,
+      depth: Number.isFinite(normalizedDepth) ? normalizedDepth : undefined,
+    });
+  } catch (error) {
+    console.warn(`[${MODULE_NAME}] Failed to apply regex to summary message ${index}`, error);
+    return text;
+  }
+}
+
+function getSummaryMessageDepth(entries, position) {
+  return Math.max(0, Number(entries.length || 0) - Number(position || 0) - 1);
+}
+
+function getMessageChunk(index, message, options = {}) {
   const role = getMessageRole(message);
   const name = String(message?.name ?? "");
-  const text = getMessageText(message);
+  const text = getSummaryMessageText(index, message, options);
   return `[${index}] (${role}${name ? `/${name}` : ""}) ${text}`;
 }
 
@@ -1998,19 +2033,19 @@ function getNextStartIndex() {
   return Number(gap.start);
 }
 
-function calculateMessageRangeTokens(startIndex, endIndex) {
-  const chat = getChatMessages();
-  if (!chat.length) return 0;
-  const start = Number(startIndex);
-  const end = Number(endIndex);
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start) return 0;
+function calculateMessageRangeTokens(startIndex, endIndex, options = {}) {
+  const state = options.state ?? getState();
+  const applyRegex = options.applyRegex ?? shouldApplyRegexToSummaryRawBlock(state);
+  const entries = getRangeMessageEntries(startIndex, endIndex);
+  if (!entries.length) return 0;
 
-  const cappedEnd = Math.min(end, chat.length - 1);
   let total = 0;
-  for (let i = start; i <= cappedEnd; i++) {
-    if (isMessageHiddenFromMemory(chat[i])) continue;
-    total += countTokens(getMessageChunk(i, chat[i]));
-  }
+  entries.forEach(({ index, message }, position) => {
+    total += countTokens(getMessageChunk(index, message, {
+      applyRegex,
+      depth: getSummaryMessageDepth(entries, position),
+    }));
+  });
   return total;
 }
 
@@ -2575,11 +2610,16 @@ function renderLockedBlocksList() {
   container.innerHTML = html;
 }
 
-function buildRawBlockText(startIndex, endIndex) {
+function buildRawBlockText(startIndex, endIndex, options = {}) {
+  const state = options.state ?? getState();
+  const applyRegex = options.applyRegex ?? shouldApplyRegexToSummaryRawBlock(state);
   const entries = getRangeMessageEntries(startIndex, endIndex);
   if (!entries.length) return "";
   return entries
-    .map(({ index, message }) => getMessageChunk(index, message))
+    .map(({ index, message }, position) => getMessageChunk(index, message, {
+      applyRegex,
+      depth: getSummaryMessageDepth(entries, position),
+    }))
     .join("\n");
 }
 
@@ -3052,6 +3092,7 @@ function autoSelectNextRange(options = {}) {
     return;
   }
   const rawBlockBudget = budgetInfo.rawBlockLimit;
+  const applyRegex = shouldApplyRegexToSummaryRawBlock(state);
 
   let sourceTokenCount = 0;
   let endIndex = startIndex;
@@ -3061,9 +3102,15 @@ function autoSelectNextRange(options = {}) {
       endIndex = i;
       continue;
     }
-    const msgTokens = countTokens(getMessageChunk(i, chat[i]));
-    if (sourceTokenCount + msgTokens > rawBlockBudget && i > startIndex) break;
-    sourceTokenCount += msgTokens;
+    if (applyRegex) {
+      const candidateTokenCount = calculateMessageRangeTokens(startIndex, i, { state, applyRegex });
+      if (candidateTokenCount > rawBlockBudget && i > startIndex) break;
+      sourceTokenCount = candidateTokenCount;
+    } else {
+      const msgTokens = countTokens(getMessageChunk(i, chat[i], { applyRegex: false }));
+      if (sourceTokenCount + msgTokens > rawBlockBudget && i > startIndex) break;
+      sourceTokenCount += msgTokens;
+    }
     endIndex = i;
   }
 
@@ -3319,7 +3366,7 @@ async function generateDraftCheckpoint(options = {}) {
   const draftRunId = ++draftGenerationRunSeq;
   const isCurrentDraftRun = () => activeDraftGenerationRunId === draftRunId;
   let capturedRawPrompt = prompt;
-  let capturedRawPromptMode = state.settings.useProfilePromptStack ? "profile-quiet" : "raw";
+  let capturedRawPromptMode = formatRawPromptMode(state.settings.useProfilePromptStack ? "profile-quiet" : "raw", state);
 
   if (promptTokens > promptBudget) {
     toastr.warning(
@@ -3342,7 +3389,7 @@ async function generateDraftCheckpoint(options = {}) {
             throw new Error(`Worldbook is enabled, but no readable World Info snapshot was found. WI diagnostics: ${getWorldInfoResolutionReason()}`);
           }
         capturedRawPrompt = rawPrompt || prompt;
-        capturedRawPromptMode = rawPrompt ? "raw-with-worldbook" : "raw";
+        capturedRawPromptMode = formatRawPromptMode(rawPrompt ? "raw-with-worldbook" : "raw", state);
         const rawSummary = await generateRaw({
           prompt: rawPrompt || prompt,
         });
@@ -3361,7 +3408,7 @@ async function generateDraftCheckpoint(options = {}) {
           throw new Error(`Worldbook is enabled, but no readable World Info snapshot was found. WI diagnostics: ${getWorldInfoResolutionReason()}`);
         }
         capturedRawPrompt = rawPrompt || prompt;
-        capturedRawPromptMode = rawPrompt ? "profile-fallback-raw-with-worldbook" : "profile-fallback-raw";
+        capturedRawPromptMode = formatRawPromptMode(rawPrompt ? "profile-fallback-raw-with-worldbook" : "profile-fallback-raw", state);
         const rawSummary = await generateRaw({
           prompt: rawPrompt || prompt,
         });
@@ -3688,6 +3735,7 @@ function applyNoBrainUiLock() {
     "stcs-enabled",
     "stcs-no-brain-mode",
     "stcs-hide-summarized-messages",
+    "stcs-apply-regex-summary-raw-block",
     "stcs-connection-profile",
     "stcs-summary-compression-preset-inline",
     "stcs-summary-template",
@@ -4421,6 +4469,7 @@ function renderStatus() {
   const useProfilePromptStackEl = document.getElementById("stcs-use-profile-prompt-stack");
   const useWorldbookInDraftEl = document.getElementById("stcs-use-worldbook-in-draft");
   const hideSummarizedMessagesEl = document.getElementById("stcs-hide-summarized-messages");
+  const applyRegexSummaryRawBlockEl = document.getElementById("stcs-apply-regex-summary-raw-block");
   const calcMaxContextEl = document.getElementById("stcs-calc-max-context");
   const calcTitleEl = document.getElementById("stcs-calc-title");
   const calcDrawerEl = document.getElementById("stcs-calc-drawer");
@@ -4507,6 +4556,7 @@ function renderStatus() {
   if (useProfilePromptStackEl) useProfilePromptStackEl.checked = !!state.settings.useProfilePromptStack;
   if (useWorldbookInDraftEl) useWorldbookInDraftEl.checked = !!state.settings.useWorldbookInDraft;
   if (hideSummarizedMessagesEl) hideSummarizedMessagesEl.checked = !!state.settings.hideSummarizedMessages;
+  if (applyRegexSummaryRawBlockEl) applyRegexSummaryRawBlockEl.checked = !!state.settings.applyRegexToSummaryRawBlock;
   if (calcMaxContextEl) calcMaxContextEl.value = String(state.settings.calculator.maxContextTokens);
   if (calcExpectedResponseEl) calcExpectedResponseEl.value = String(state.settings.calculator.expectedResponseTokens);
   if (calcLorebookEl) calcLorebookEl.value = String(state.settings.calculator.lorebookTokens);
@@ -4641,6 +4691,7 @@ function bindUiEvents() {
   const useProfilePromptStackEl = document.getElementById("stcs-use-profile-prompt-stack");
   const useWorldbookInDraftEl = document.getElementById("stcs-use-worldbook-in-draft");
   const hideSummarizedMessagesEl = document.getElementById("stcs-hide-summarized-messages");
+  const applyRegexSummaryRawBlockEl = document.getElementById("stcs-apply-regex-summary-raw-block");
   const calcMaxContextEl = document.getElementById("stcs-calc-max-context");
   const calcExpectedResponseEl = document.getElementById("stcs-calc-expected-response");
   const calcLorebookEl = document.getElementById("stcs-calc-lorebook");
@@ -4802,6 +4853,19 @@ function bindUiEvents() {
       }
     });
     renderStatus();
+  });
+  applyRegexSummaryRawBlockEl?.addEventListener("change", () => {
+    const state = getState();
+    state.settings.applyRegexToSummaryRawBlock = !!applyRegexSummaryRawBlockEl.checked;
+    if (!hasVisibleText(state.draft?.summary ?? "")) {
+      clearDraftRawPrompt(state.draft);
+      state.draft.sourceTokenCount = getDraftRange(state.draft)
+        ? calculateMessageRangeTokens(state.draft.startIndex, state.draft.endIndex, { state })
+        : 0;
+    }
+    saveState();
+    renderStatus();
+    scheduleAutoModeRun();
   });
   connectionProfileEl?.addEventListener("click", () => {
     void updateConnectionProfileDropdown();
